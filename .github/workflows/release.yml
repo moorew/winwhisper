@@ -57,8 +57,13 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
-          Copy-Item "engine\dist\winwhisper_engine.exe" `
-            "src-tauri\binaries\winwhisper_engine-x86_64-pc-windows-msvc.exe"
+          $src = "engine\dist\winwhisper_engine.exe"
+          $dst = "src-tauri\binaries\winwhisper_engine-x86_64-pc-windows-msvc.exe"
+          if (-not (Test-Path $src)) { throw "PyInstaller output not found: $src" }
+          Copy-Item $src $dst
+          if (-not (Test-Path $dst)) { throw "Copy failed — sidecar not at: $dst" }
+          $mb = [math]::Round((Get-Item $dst).Length / 1MB, 1)
+          Write-Host "Staged sidecar: $dst ($mb MB)"
 
       # ── Node / Frontend ───────────────────────────────────────────────────
       - name: Set up Node.js 20
