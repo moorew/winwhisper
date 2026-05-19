@@ -35,7 +35,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "msi"],
     "externalBin": [
       "binaries/winwhisper_engine"
     ],
