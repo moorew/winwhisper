@@ -1,0 +1,116 @@
+from __future__ import annotations
+
+import uuid
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional, Tuple
+
+try:
+    import yt_dlp
+    _YT_DLP_AVAILABLE = True
+except ImportError:
+    _YT_DLP_AVAILABLE = False
+
+
+def _check_available() -> None:
+    if not _YT_DLP_AVAILABLE:
+        raise RuntimeError("yt-dlp is not installed. Run: pip install yt-dlp")
+
+
+class YouTubeExtractor:
+    """
+    Wraps yt-dlp for audio extraction and metadata fetching.
+    All methods are synchronous — call via asyncio.to_thread.
+    """
+
+    def get_metadata(self, url: str) -> Dict[str, Any]:
+        """
+        Fetches video metadata without downloading.
+        Returns dict with: title, duration, uploader, thumbnail, video_id.
+        """
+        _check_available()
+
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "extract_flat": False,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        return {
+            "title": info.get("title", url),
+            "duration": info.get("duration"),          # seconds
+            "uploader": info.get("uploader"),
+            "thumbnail": info.get("thumbnail"),
+            "video_id": info.get("id"),
+            "channel": info.get("channel"),
+            "view_count": info.get("view_count"),
+        }
+
+    def extract_audio(
+        self,
+        url: str,
+        output_dir: str,
+        on_progress: Optional[Callable[[float], None]] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Downloads the best available audio from url into output_dir.
+        Calls on_progress(0.0–1.0) during the download phase.
+        Returns (absolute_file_path, metadata_dict).
+        """
+        _check_available()
+
+        # Unique prefix so parallel downloads never collide
+        prefix = uuid.uuid4().hex[:8]
+
+        def _hook(d: dict) -> None:
+            if on_progress is None:
+                return
+            status = d.get("status")
+            if status == "downloading":
+                total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
+                downloaded = d.get("downloaded_bytes", 0)
+                if total and total > 0:
+                    on_progress(min(downloaded / total, 0.99))
+            elif status == "finished":
+                on_progress(1.0)
+
+        ydl_opts = {
+            # Prefer m4a (AAC) or webm; both are natively readable by ffmpeg/faster-whisper
+            "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+            "outtmpl": str(Path(output_dir) / f"yt_{prefix}_%(id)s.%(ext)s"),
+            "progress_hooks": [_hook],
+            "quiet": True,
+            "no_warnings": True,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+
+        video_id = info.get("id", "unknown")
+
+        # Locate the downloaded file — yt-dlp may choose a different extension
+        candidates = sorted(Path(output_dir).glob(f"yt_{prefix}_{video_id}.*"))
+        if not candidates:
+            candidates = sorted(Path(output_dir).glob(f"yt_{prefix}_*.*"))
+
+        if not candidates:
+            raise FileNotFoundError(
+                f"Downloaded audio file not found in {output_dir} for: {url}"
+            )
+
+        metadata = {
+            "title": info.get("title", url),
+            "duration": info.get("duration"),
+            "uploader": info.get("uploader"),
+            "thumbnail": info.get("thumbnail"),
+            "video_id": video_id,
+        }
+
+        return str(candidates[0]), metadata
+
+
+# Module-level singleton
+extractor = YouTubeExtractor()

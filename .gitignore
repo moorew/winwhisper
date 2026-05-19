@@ -1,0 +1,33 @@
+# Python
+engine/__pycache__/
+engine/**/__pycache__/
+**/*.pyc
+engine/dist/
+engine/build/
+engine/.venv/
+engine/venv/
+
+# Node
+node_modules/
+dist/
+
+# Tauri
+src-tauri/target/
+# Sidecar binary (built in CI, not committed)
+src-tauri/binaries/
+
+# Release artifacts
+release-artifacts/
+
+# Database files (user data — never commit)
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
