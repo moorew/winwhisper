@@ -102,13 +102,9 @@ jobs:
 
           New-Item -ItemType Directory -Force -Path "release-artifacts" | Out-Null
 
-          # NSIS installer (primary)
+          # NSIS installer
           Get-ChildItem "src-tauri\target\release\bundle\nsis\*.exe" -ErrorAction SilentlyContinue |
             ForEach-Object { Copy-Item $_.FullName "release-artifacts\WinWhisper-${version}-setup.exe" }
-
-          # MSI (alternative)
-          Get-ChildItem "src-tauri\target\release\bundle\msi\*.msi" -ErrorAction SilentlyContinue |
-            ForEach-Object { Copy-Item $_.FullName "release-artifacts\WinWhisper-${version}.msi" }
 
           Write-Host "Artifacts:"
           Get-ChildItem "release-artifacts"
