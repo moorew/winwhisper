@@ -1,4 +1,5 @@
 use std::{
+    process::Stdio,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -8,7 +9,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager,
 };
-use tauri_plugin_shell::{process::CommandEvent, ShellExt};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 struct EngineState {
     port: Mutex<Option<u16>>,
@@ -21,7 +22,6 @@ fn get_engine_port(state: tauri::State<'_, Arc<EngineState>>) -> Option<u16> {
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .manage(Arc::new(EngineState {
             port: Mutex::new(None),
         }))
@@ -85,13 +85,32 @@ fn spawn_engine(handle: AppHandle) {
     let state = handle.state::<Arc<EngineState>>().inner().clone();
 
     tauri::async_runtime::spawn(async move {
-        let (mut rx, _child) = match handle
-            .shell()
-            .sidecar("binaries/winwhisper_engine")
-            .expect("sidecar not configured")
+        // Engine lives in the app's resource directory, placed there by the Tauri bundle
+        let engine_exe = match handle.path().resource_dir() {
+            Ok(dir) => dir.join("winwhisper_engine").join("winwhisper_engine.exe"),
+            Err(e) => {
+                eprintln!("[WinWhisper] Cannot resolve resource dir: {e}");
+                show_window(&handle);
+                return;
+            }
+        };
+
+        if !engine_exe.exists() {
+            eprintln!("[WinWhisper] Engine not found at {engine_exe:?} — start it manually for dev");
+            show_window(&handle);
+            return;
+        }
+
+        // Run from the engine directory so _internal/ is found correctly
+        let engine_dir = engine_exe.parent().unwrap().to_path_buf();
+
+        let mut child = match tokio::process::Command::new(&engine_exe)
+            .current_dir(&engine_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
         {
-            Ok(v) => v,
+            Ok(c) => c,
             Err(e) => {
                 eprintln!("[WinWhisper] Failed to spawn engine: {e}");
                 show_window(&handle);
@@ -99,26 +118,23 @@ fn spawn_engine(handle: AppHandle) {
             }
         };
 
-        // Scan stdout for the WINWHISPER_PORT= announcement
+        // Scan stdout for WINWHISPER_PORT= announcement
+        let stdout = child.stdout.take().expect("stdout not captured");
+        let mut lines = BufReader::new(stdout).lines();
         let mut port: Option<u16> = None;
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(line) => {
-                    let text = String::from_utf8_lossy(&line);
-                    if let Some(rest) = text.trim().strip_prefix("WINWHISPER_PORT=") {
+
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    if let Some(rest) = line.trim().strip_prefix("WINWHISPER_PORT=") {
                         if let Ok(p) = rest.trim().parse::<u16>() {
                             *state.port.lock().unwrap() = Some(p);
                             port = Some(p);
-                            break;
                         }
+                        break;
                     }
                 }
-                CommandEvent::Terminated(_) => {
-                    eprintln!("[WinWhisper] Engine exited before announcing port");
-                    show_window(&handle);
-                    return;
-                }
-                _ => {}
+                _ => break,
             }
         }
 
@@ -130,7 +146,7 @@ fn spawn_engine(handle: AppHandle) {
             }
         };
 
-        // Poll until TCP port accepts connections (30 s timeout)
+        // Poll TCP until the engine accepts connections (30 s timeout)
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             if tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
@@ -148,8 +164,8 @@ fn spawn_engine(handle: AppHandle) {
 
         show_window(&handle);
 
-        // Drain remaining I/O so the sidecar process doesn't block on its pipe
-        while rx.recv().await.is_some() {}
+        // Keep child alive for the app's lifetime
+        let _ = child.wait().await;
     });
 }
 

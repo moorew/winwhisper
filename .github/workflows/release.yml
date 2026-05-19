@@ -42,8 +42,9 @@ jobs:
         run: |
           cd engine
           pip install --upgrade pip
-          # Install torch with CUDA 12.1 for GPU support; falls back to CPU at runtime
-          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+          # CPU-only torch keeps the bundle under NSIS's 2 GB mmap limit.
+          # GPU transcription still works via CTranslate2's own CUDA support.
+          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
           pip install pyinstaller
 
@@ -53,17 +54,17 @@ jobs:
           cd engine
           pyinstaller winwhisper_engine.spec
 
-      - name: Stage sidecar for Tauri
+      - name: Stage engine for Tauri resources
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
-          $src = "engine\dist\winwhisper_engine.exe"
-          $dst = "src-tauri\binaries\winwhisper_engine-x86_64-pc-windows-msvc.exe"
+          $src = "engine\dist\winwhisper_engine"
+          $dst = "src-tauri\resources\winwhisper_engine"
           if (-not (Test-Path $src)) { throw "PyInstaller output not found: $src" }
-          Copy-Item $src $dst
-          if (-not (Test-Path $dst)) { throw "Copy failed — sidecar not at: $dst" }
-          $mb = [math]::Round((Get-Item $dst).Length / 1MB, 1)
-          Write-Host "Staged sidecar: $dst ($mb MB)"
+          New-Item -ItemType Directory -Force -Path "src-tauri\resources" | Out-Null
+          Copy-Item -Recurse -Force $src $dst
+          if (-not (Test-Path "$dst\winwhisper_engine.exe")) { throw "Staged EXE missing at: $dst\winwhisper_engine.exe" }
+          $mb = [math]::Round((Get-Item "$dst\winwhisper_engine.exe").Length / 1MB, 1)
+          Write-Host "Staged engine directory: $dst (EXE is $mb MB)"
 
       # ── Node / Frontend ───────────────────────────────────────────────────
       - name: Set up Node.js 20

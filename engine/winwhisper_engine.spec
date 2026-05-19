@@ -1,29 +1,30 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Run from the engine/ directory:  pyinstaller winwhisper_engine.spec
 #
-# Produces a single-file EXE so Tauri can embed it as an external binary.
-# The EXE self-extracts to a temp directory on first run (~2–4 s overhead
-# on cold start, acceptable for a sidecar that runs for the app's lifetime).
+# Produces a directory bundle — faster startup than --onefile, and avoids
+# the 2 GB mmap limit in NSIS for large single-file EXEs.
+# GPU acceleration for transcription is provided by CTranslate2 (bundled here);
+# PyTorch only needs to be CPU-only since pyannote.audio runs fine on CPU.
 
 block_cipher = None
 
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
 
-ct2_binaries = collect_dynamic_libs("ctranslate2")
-ct2_datas    = collect_data_files("ctranslate2")
-torch_datas  = collect_data_files("torch", includes=["**/*.dll"])
-pyannote_datas    = collect_data_files("pyannote.audio")
-asteroid_datas    = collect_data_files("asteroid_filterbanks", include_py_files=True)
-speechbrain_datas = collect_data_files("speechbrain")
+ct2_binaries  = collect_dynamic_libs("ctranslate2")
+ct2_datas     = collect_data_files("ctranslate2")
+torch_datas   = collect_data_files("torch")
+pyannote_datas     = collect_data_files("pyannote.audio")
+asteroid_datas     = collect_data_files("asteroid_filterbanks", include_py_files=True)
+speechbrain_datas  = collect_data_files("speechbrain")
 
 a = Analysis(
     ["main.py"],
     pathex=["."],
     binaries=ct2_binaries,
     datas=[
-        ("api",     "api"),
-        ("core",    "core"),
-        ("features","features"),
+        ("api",      "api"),
+        ("core",     "core"),
+        ("features", "features"),
         *ct2_datas,
         *torch_datas,
         *pyannote_datas,
@@ -65,20 +66,16 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-# Single-file EXE — all binaries and datas embedded
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    exclude_binaries=False,
+    [],
+    exclude_binaries=True,   # directory mode — binaries collected separately
     name="winwhisper_engine",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
-    upx_exclude=["vcruntime140.dll", "python3*.dll"],
+    upx=False,
     # console=True is required: Tauri reads WINWHISPER_PORT= from this stdout
     console=True,
     disable_windowed_traceback=False,
@@ -86,4 +83,14 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    name="winwhisper_engine",
 )
