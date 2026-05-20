@@ -63,49 +63,130 @@ jobs:
           pyinstaller winwhisper_engine.spec
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 
-      - name: Bundle Visual C++ runtime DLLs
+      - name: Bundle Visual C++ + UCRT runtime DLLs
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          # python311.dll depends on the VC++ 2015-2022 runtime. The CI runner
-          # ships this in System32, so PyInstaller doesn't copy it into the
-          # bundle. End-user machines without Visual Studio installed do NOT
-          # have these DLLs, so python311.dll fails to LoadLibrary on launch
-          # with the misleading "module could not be found" error. Copy them
-          # next to python311.dll so the bundle is fully self-contained.
+          # python311.dll depends on:
+          #   1) the VC++ 2015-2022 runtime (vcruntime140, msvcp140, etc.)
+          #   2) the Universal C Runtime (ucrtbase + ~40 api-ms-win-crt-*.dll)
+          # The GitHub Actions runner has both in System32, so PyInstaller
+          # doesn't copy them. End-user machines may be missing either set
+          # (especially UCRT on stripped or N/KN Windows editions), causing
+          # LoadLibrary("python311.dll") to fail with the misleading
+          # "module could not be found" error. Copy both sets into _internal
+          # so the bundle is fully self-contained.
           $target = "engine\dist\winwhisper_engine\_internal"
           if (-not (Test-Path $target)) {
             throw "Expected PyInstaller _internal dir at $target but it is missing"
           }
-          $candidates = @(
+
+          # ── VC++ runtime (from System32) ─────────────────────────────────
+          $vcCandidates = @(
             "vcruntime140.dll",
             "vcruntime140_1.dll",
             "msvcp140.dll",
             "msvcp140_1.dll",
             "msvcp140_2.dll",
-            "concrt140.dll"
+            "msvcp140_codecvt_ids.dll",
+            "concrt140.dll",
+            "vcomp140.dll",
+            "vccorlib140.dll"
           )
-          $copied = @()
-          $missing = @()
-          foreach ($dll in $candidates) {
+          $vcCopied = @()
+          foreach ($dll in $vcCandidates) {
             $src = Join-Path "C:\Windows\System32" $dll
             $dst = Join-Path $target $dll
             if (Test-Path $dst) { continue }
             if (Test-Path $src) {
               Copy-Item $src $dst -Force
-              $copied += $dll
-            } else {
-              $missing += $dll
+              $vcCopied += $dll
             }
           }
-          if ($copied.Count -gt 0) {
-            Write-Host "Bundled VC++ runtime DLLs: $($copied -join ', ')"
+          if ($vcCopied.Count -gt 0) {
+            Write-Host "Bundled VC++ runtime DLLs: $($vcCopied -join ', ')"
+          } else {
+            Write-Host "VC++ runtime DLLs already present in bundle."
           }
-          # vcruntime140.dll is the one that strictly must be present.
           if (-not (Test-Path (Join-Path $target "vcruntime140.dll"))) {
             throw "vcruntime140.dll could not be located or bundled — engine will not start on user machines."
           }
-          Write-Host "VC++ runtime bundling complete. Missing optional DLLs: $($missing -join ', ')"
+
+          # ── Universal C Runtime (App-Local CRT, from Windows Kits) ───────
+          # Microsoft ships UCRT App-Local DLLs specifically for this scenario:
+          # https://learn.microsoft.com/en-us/cpp/windows/universal-crt-deployment
+          $ucrtRoot = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Redist" -Recurse -Filter "ucrtbase.dll" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "x64" } |
+            Select-Object -First 1 -ExpandProperty DirectoryName
+          if (-not $ucrtRoot) {
+            Write-Host "WARNING: Could not locate UCRT redist directory under Windows Kits. Falling back to System32."
+            $ucrtRoot = "C:\Windows\System32"
+          }
+          Write-Host "UCRT redist source: $ucrtRoot"
+
+          $ucrtCopied = @()
+          # ucrtbase.dll itself
+          $ucrtbaseSrc = Join-Path $ucrtRoot "ucrtbase.dll"
+          $ucrtbaseDst = Join-Path $target "ucrtbase.dll"
+          if (-not (Test-Path $ucrtbaseDst) -and (Test-Path $ucrtbaseSrc)) {
+            Copy-Item $ucrtbaseSrc $ucrtbaseDst -Force
+            $ucrtCopied += "ucrtbase.dll"
+          }
+          # All api-ms-win-crt-*.dll redirector DLLs
+          $apiDlls = Get-ChildItem $ucrtRoot -Filter "api-ms-win-crt-*.dll" -ErrorAction SilentlyContinue
+          # Fallback: api-set DLLs live under C:\Windows\System32\downlevel\ on some systems
+          if (-not $apiDlls -and (Test-Path "C:\Windows\System32\downlevel")) {
+            $apiDlls = Get-ChildItem "C:\Windows\System32\downlevel" -Filter "api-ms-win-crt-*.dll" -ErrorAction SilentlyContinue
+          }
+          foreach ($f in $apiDlls) {
+            $dst = Join-Path $target $f.Name
+            if (-not (Test-Path $dst)) {
+              Copy-Item $f.FullName $dst -Force
+              $ucrtCopied += $f.Name
+            }
+          }
+          Write-Host "Bundled UCRT App-Local DLLs ($($ucrtCopied.Count)):"
+          $ucrtCopied | ForEach-Object { Write-Host "  $_" }
+          if (-not (Test-Path (Join-Path $target "ucrtbase.dll"))) {
+            throw "ucrtbase.dll could not be located — Python will not load on systems without UCRT."
+          }
+
+      - name: Diagnose python311.dll dependencies
+        shell: pwsh
+        run: |
+          # Run dumpbin /dependents so the CI log shows every DLL the bundle
+          # actually pulls in. If a future release fails with LoadLibrary
+          # errors, this list tells us exactly what to bundle next.
+          $target = "engine\dist\winwhisper_engine\_internal"
+          $py = Join-Path $target "python311.dll"
+          if (-not (Test-Path $py)) {
+            Write-Host "python311.dll not in bundle — skipping dependency dump."
+            exit 0
+          }
+
+          # Find dumpbin.exe from the VS 2022 install on the runner.
+          $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = $null
+          if (Test-Path $vswhere) {
+            $installPath = & $vswhere -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if ($installPath) {
+              $dumpbin = Get-ChildItem (Join-Path $installPath "VC\Tools\MSVC") -Recurse -Filter "dumpbin.exe" -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match "Hostx64\\x64" } |
+                Select-Object -First 1 -ExpandProperty FullName
+            }
+          }
+          if (-not $dumpbin) {
+            Write-Host "dumpbin.exe not found — skipping dependency dump (non-fatal)."
+            exit 0
+          }
+
+          Write-Host "==== dumpbin /dependents python311.dll ===="
+          & $dumpbin /dependents $py
+          Write-Host ""
+          Write-Host "==== Bundle DLLs present in _internal (count + first 60) ===="
+          $all = Get-ChildItem $target -Filter "*.dll" | Sort-Object Name
+          Write-Host "Total DLLs in _internal: $($all.Count)"
+          $all | Select-Object -First 60 | ForEach-Object { Write-Host "  $($_.Name)" }
 
       - name: Verify engine bundle
         shell: pwsh
