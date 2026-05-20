@@ -7,7 +7,7 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -35,6 +35,8 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             setup_tray(&handle)?;
+            // Show the window immediately so users see the UI while the engine loads
+            show_window(&handle);
             spawn_engine(handle);
             Ok(())
         })
@@ -92,40 +94,50 @@ fn spawn_engine(handle: AppHandle) {
     let state = handle.state::<Arc<EngineState>>().inner().clone();
 
     tauri::async_runtime::spawn(async move {
-        // Engine lives in the app's resource directory, placed there by the Tauri bundle
         let engine_exe = match handle.path().resource_dir() {
             Ok(dir) => dir.join("winwhisper_engine").join("winwhisper_engine.exe"),
             Err(e) => {
                 eprintln!("[WinWhisper] Cannot resolve resource dir: {e}");
-                show_window(&handle);
                 return;
             }
         };
 
         if !engine_exe.exists() {
             eprintln!("[WinWhisper] Engine not found at {engine_exe:?} — start it manually for dev");
-            show_window(&handle);
             return;
         }
 
-        // Run from the engine directory so _internal/ is found correctly
         let engine_dir = engine_exe.parent().unwrap().to_path_buf();
 
         let mut child = match tokio::process::Command::new(&engine_exe)
             .current_dir(&engine_dir)
+            // Force line-buffered stdout so WINWHISPER_PORT= is flushed immediately.
+            // Without this, Python uses block-buffering when stdout is a pipe and the
+            // port announcement may never reach us.
+            .env("PYTHONUNBUFFERED", "1")
+            .env("PYTHONIOENCODING", "utf-8")
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
         {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[WinWhisper] Failed to spawn engine: {e}");
-                show_window(&handle);
                 return;
             }
         };
 
-        // Scan stdout for WINWHISPER_PORT= announcement
+        // Drain stderr in a separate task so it never blocks the child process.
+        if let Some(stderr) = child.stderr.take() {
+            tauri::async_runtime::spawn(async move {
+                let mut lines = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    eprintln!("[engine] {line}");
+                }
+            });
+        }
+
+        // Scan stdout for the WINWHISPER_PORT= announcement.
         let stdout = child.stdout.take().expect("stdout not captured");
         let mut lines = BufReader::new(stdout).lines();
         let mut port: Option<u16> = None;
@@ -148,13 +160,13 @@ fn spawn_engine(handle: AppHandle) {
         let port = match port {
             Some(p) => p,
             None => {
-                show_window(&handle);
+                eprintln!("[WinWhisper] Engine exited without announcing port");
                 return;
             }
         };
 
-        // Poll TCP until the engine accepts connections (30 s timeout)
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        // Poll TCP until the engine accepts connections. No hard cap — on first launch
+        // the engine loads large ML libraries which can take 60-90 s on slow hardware.
         loop {
             if tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
                 .await
@@ -162,17 +174,15 @@ fn spawn_engine(handle: AppHandle) {
             {
                 break;
             }
-            if tokio::time::Instant::now() > deadline {
-                eprintln!("[WinWhisper] Engine health-check timed out");
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
-        show_window(&handle);
+        // Notify the frontend that the engine is ready with its port.
+        let _ = handle.emit("engine-ready", port);
 
-        // Keep child alive for the app's lifetime
+        // Keep child alive for the app's lifetime.
         let _ = child.wait().await;
+        eprintln!("[WinWhisper] Engine process exited");
     });
 }
 

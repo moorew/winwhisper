@@ -47,12 +47,18 @@ export default function Models() {
     setEngineError(false);
     api.models
       .list()
-      .then(setModels)
+      .then((ms) => { setModels(ms); setEngineError(false); })
       .catch(() => setEngineError(true))
       .finally(() => setLoading(false));
   }, []);
 
+  // Initial load, then auto-retry every 4 s while the engine is still starting up.
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    if (!engineError) return;
+    const id = setInterval(load, 4000);
+    return () => clearInterval(id);
+  }, [engineError, load]);
 
   useEffect(() => {
     const refs = esRefs.current;

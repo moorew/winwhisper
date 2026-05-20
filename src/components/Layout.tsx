@@ -10,8 +10,14 @@ const NAV = [
   { to: "/settings", icon: Settings, label: "Settings" },
 ] as const;
 
-export default function Layout({ children }: { children: ReactNode }) {
-  const { healthy, checking } = useEngineHealth();
+export default function Layout({
+  children,
+  engineReady,
+}: {
+  children: ReactNode;
+  engineReady: boolean;
+}) {
+  const { healthy } = useEngineHealth(engineReady);
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
@@ -50,15 +56,21 @@ export default function Layout({ children }: { children: ReactNode }) {
           <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
             <span
               className={cn(
-                "h-2 w-2 rounded-full",
-                checking
+                "h-2 w-2 rounded-full flex-shrink-0",
+                !engineReady
                   ? "bg-yellow-400 animate-pulse"
                   : healthy
                   ? "bg-green-500"
-                  : "bg-red-500"
+                  : "bg-red-500 animate-pulse"
               )}
             />
-            <span>{checking ? "Connecting…" : healthy ? "Engine ready" : "Engine offline"}</span>
+            <span>
+              {!engineReady
+                ? "Engine starting…"
+                : healthy
+                ? "Engine ready"
+                : "Engine offline"}
+            </span>
           </div>
         </div>
       </aside>

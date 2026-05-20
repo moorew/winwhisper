@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 
-export function useEngineHealth() {
+export function useEngineHealth(engineReady: boolean) {
   const [healthy, setHealthy] = useState(false);
-  const [checking, setChecking] = useState(true);
 
   const check = useCallback(async () => {
     try {
@@ -11,16 +10,15 @@ export function useEngineHealth() {
       setHealthy(res.status === "ok");
     } catch {
       setHealthy(false);
-    } finally {
-      setChecking(false);
     }
   }, []);
 
   useEffect(() => {
+    if (!engineReady) return;
     check();
-    const interval = setInterval(check, 5000);
-    return () => clearInterval(interval);
-  }, [check]);
+    const id = setInterval(check, 5000);
+    return () => clearInterval(id);
+  }, [engineReady, check]);
 
-  return { healthy, checking, retry: check };
+  return { healthy };
 }
