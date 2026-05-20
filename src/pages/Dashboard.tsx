@@ -80,6 +80,7 @@ export default function Dashboard() {
   const [search, setSearch] = useState("");
   const [models, setModels] = useState<string[]>(["tiny", "base", "small", "medium", "large-v3"]);
   const [loadingTranscripts, setLoadingTranscripts] = useState(true);
+  const hadActiveJobsRef = useRef(false);
 
   // Batch selection
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -94,10 +95,10 @@ export default function Dashboard() {
     }).catch(() => {});
   }, []);
 
-  const loadTranscripts = useCallback(() => {
+  const loadTranscripts = useCallback((resetSelection = false) => {
     api.transcripts
       .list()
-      .then((ts) => { setTranscripts(ts); setSelected(new Set()); })
+      .then((ts) => { setTranscripts(ts); if (resetSelection) setSelected(new Set()); })
       .catch(() => {})
       .finally(() => setLoadingTranscripts(false));
   }, []);
@@ -115,11 +116,18 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    loadTranscripts();
+    loadTranscripts(true);
     pollJobs();
     const id = setInterval(() => {
       pollJobs();
-      setJobs((prev) => { if (prev.length > 0) loadTranscripts(); return prev; });
+      setJobs((prev) => {
+        const wasActive = hadActiveJobsRef.current;
+        hadActiveJobsRef.current = prev.length > 0;
+        // Refresh transcripts while jobs are active, plus one extra tick after they clear
+        // so the newly-completed transcript is fetched before hadActive resets to false
+        if (prev.length > 0 || wasActive) loadTranscripts();
+        return prev;
+      });
     }, 2000);
     return () => clearInterval(id);
   }, [loadTranscripts, pollJobs]);
@@ -509,7 +517,7 @@ export default function Dashboard() {
                 Export {selected.size}
               </Button>
             )}
-            <button onClick={loadTranscripts} className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0">
+            <button onClick={() => loadTranscripts(true)} className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0">
               <RefreshCw className="h-3.5 w-3.5" />
             </button>
           </div>
@@ -537,7 +545,7 @@ export default function Dashboard() {
                     selected={selected.has(t.id)}
                     onToggleSelect={() => toggleSelect(t.id)}
                     onOpen={() => navigate(`/editor/${t.id}`)}
-                    onDelete={async () => { await api.transcripts.delete(t.id); loadTranscripts(); }}
+                    onDelete={async () => { await api.transcripts.delete(t.id); loadTranscripts(true); }}
                   />
                 ))}
               </div>
