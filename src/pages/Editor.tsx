@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -11,7 +11,10 @@ import {
   Edit2,
   Check,
   X,
+  Play,
+  Pause,
 } from "lucide-react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { api, TranscriptDetail, Speaker } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -35,22 +38,85 @@ export default function Editor() {
   const [editSpeaker, setEditSpeaker] = useState<number | null>(null);
   const [speakerName, setSpeakerName] = useState("");
 
+  // Waveform state
+  const waveContainerRef = useRef<HTMLDivElement>(null);
+  const wavesurferRef = useRef<import("wavesurfer.js").default | null>(null);
+  const [waveReady, setWaveReady] = useState(false);
+  const [wavePlaying, setWavePlaying] = useState(false);
+  const [waveTime, setWaveTime] = useState(0);
+  const [waveDuration, setWaveDuration] = useState(0);
+
   const load = useCallback(() => {
     if (!id) return;
     setLoading(true);
     api.transcripts
       .get(id)
-      .then((t) => {
-        setTranscript(t);
-        setSpeakers(t.speakers);
-      })
+      .then((t) => { setTranscript(t); setSpeakers(t.speakers); })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
 
-  function speakerForLabel(label: string | null): Speaker | undefined {
+  // Mount waveform once transcript is loaded and has a source_path
+  useEffect(() => {
+    if (!transcript?.source_path || !waveContainerRef.current) return;
+
+    let destroyed = false;
+    (async () => {
+      try {
+        const WaveSurfer = (await import("wavesurfer.js")).default;
+        if (destroyed || !waveContainerRef.current) return;
+
+        const ws = WaveSurfer.create({
+          container: waveContainerRef.current,
+          waveColor: "hsl(var(--muted-foreground) / 0.4)",
+          progressColor: "hsl(var(--primary))",
+          cursorColor: "hsl(var(--primary))",
+          cursorWidth: 2,
+          height: 52,
+          barWidth: 2,
+          barGap: 1,
+          barRadius: 2,
+          normalize: true,
+          interact: true,
+        });
+
+        wavesurferRef.current = ws;
+
+        ws.on("ready", () => { setWaveReady(true); setWaveDuration(ws.getDuration()); });
+        ws.on("play", () => setWavePlaying(true));
+        ws.on("pause", () => setWavePlaying(false));
+        ws.on("finish", () => setWavePlaying(false));
+        ws.on("timeupdate", (t) => setWaveTime(t));
+
+        const src = convertFileSrc(transcript.source_path!);
+        ws.load(src);
+      } catch {
+        // Waveform unavailable — degrade gracefully
+      }
+    })();
+
+    return () => {
+      destroyed = true;
+      wavesurferRef.current?.destroy();
+      wavesurferRef.current = null;
+      setWaveReady(false);
+      setWavePlaying(false);
+    };
+  }, [transcript?.source_path]);
+
+  function seekTo(seconds: number) {
+    const ws = wavesurferRef.current;
+    if (!ws || !waveReady) return;
+    ws.seekTo(Math.max(0, Math.min(1, seconds / ws.getDuration())));
+  }
+
+  function togglePlay() {
+    wavesurferRef.current?.playPause();
+  }
+
+  function speakerForLabel(label: string | null) {
     return label ? speakers.find((s) => s.label === label) : undefined;
   }
 
@@ -73,12 +139,10 @@ export default function Editor() {
     setEditSpeaker(null);
   }
 
-  // Client-side exports
   function exportTxt() {
     if (!transcript) return;
     const text = transcript.segments.map((s) => {
-      const name = displayName(s.speaker_label);
-      const prefix = s.speaker_label ? `[${name}] ` : "";
+      const prefix = s.speaker_label ? `[${displayName(s.speaker_label)}] ` : "";
       return `${prefix}${s.text.trim()}`;
     }).join("\n");
     download(text, `${transcript.title}.txt`, "text/plain");
@@ -86,11 +150,9 @@ export default function Editor() {
 
   function exportSrt() {
     if (!transcript) return;
-    const lines = transcript.segments.map((s, i) => {
-      const start = toSrtTime(s.start);
-      const end = toSrtTime(s.end);
-      return `${i + 1}\n${start} --> ${end}\n${s.text.trim()}\n`;
-    });
+    const lines = transcript.segments.map((s, i) =>
+      `${i + 1}\n${toSrtTime(s.start)} --> ${toSrtTime(s.end)}\n${s.text.trim()}\n`
+    );
     download(lines.join("\n"), `${transcript.title}.srt`, "text/plain");
   }
 
@@ -98,12 +160,7 @@ export default function Editor() {
     if (!transcript) return;
     const lines = ["WEBVTT", ""];
     transcript.segments.forEach((s, i) => {
-      lines.push(
-        `${i + 1}`,
-        `${toVttTime(s.start)} --> ${toVttTime(s.end)}`,
-        s.text.trim(),
-        ""
-      );
+      lines.push(`${i + 1}`, `${toVttTime(s.start)} --> ${toVttTime(s.end)}`, s.text.trim(), "");
     });
     download(lines.join("\n"), `${transcript.title}.vtt`, "text/vtt");
   }
@@ -164,7 +221,6 @@ export default function Editor() {
             )}
           </div>
         </div>
-        {/* Export menu */}
         <div className="flex items-center gap-1">
           {[
             { label: "TXT", fn: exportTxt },
@@ -179,6 +235,31 @@ export default function Editor() {
           ))}
         </div>
       </div>
+
+      {/* Waveform player — shown only when source_path is available */}
+      {transcript.source_path && (
+        <div className="flex items-center gap-3 border-b border-border px-4 py-2 bg-muted/30">
+          <button
+            onClick={togglePlay}
+            disabled={!waveReady}
+            className="flex-shrink-0 rounded-full bg-primary/10 p-2 text-primary hover:bg-primary/20 transition-colors disabled:opacity-40"
+          >
+            {wavePlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+          </button>
+          <div className="flex-1 min-w-0">
+            <div ref={waveContainerRef} className="w-full" />
+            {!waveReady && (
+              <div className="flex items-center gap-1.5 py-3 text-xs text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                <span>Loading audio…</span>
+              </div>
+            )}
+          </div>
+          <span className="text-xs tabular-nums text-muted-foreground flex-shrink-0">
+            {formatDuration(waveTime)} / {formatDuration(waveDuration)}
+          </span>
+        </div>
+      )}
 
       {/* Speaker chips */}
       {uniqueSpeakers.length > 0 && (
@@ -208,10 +289,7 @@ export default function Editor() {
                 <Badge
                   style={{ backgroundColor: colorForLabel(sp.label), color: "#fff" }}
                   className="cursor-pointer gap-1 pr-1.5"
-                  onClick={() => {
-                    setEditSpeaker(sp.id);
-                    setSpeakerName(sp.name ?? sp.label);
-                  }}
+                  onClick={() => { setEditSpeaker(sp.id); setSpeakerName(sp.name ?? sp.label); }}
                 >
                   {displayName(sp.label)}
                   <Edit2 className="h-2.5 w-2.5 opacity-70" />
@@ -226,10 +304,20 @@ export default function Editor() {
       <ScrollArea className="flex-1">
         <div className="divide-y divide-border/50">
           {transcript.segments.map((seg) => (
-            <div key={seg.id} className="flex gap-3 px-4 py-3 hover:bg-accent/30 transition-colors">
-              <span className="text-xs text-muted-foreground tabular-nums pt-0.5 w-16 flex-shrink-0">
+            <div
+              key={seg.id}
+              className="flex gap-3 px-4 py-3 hover:bg-accent/30 transition-colors group"
+            >
+              <button
+                onClick={() => seekTo(seg.start)}
+                title={waveReady ? `Jump to ${formatDuration(seg.start)}` : undefined}
+                className={cn(
+                  "text-xs text-muted-foreground tabular-nums pt-0.5 w-16 flex-shrink-0 text-left transition-colors",
+                  waveReady && "hover:text-primary cursor-pointer"
+                )}
+              >
                 {formatDuration(seg.start)}
-              </span>
+              </button>
               {seg.speaker_label && (
                 <span
                   className="text-xs font-medium pt-0.5 w-20 flex-shrink-0 truncate"
@@ -247,7 +335,9 @@ export default function Editor() {
   );
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+function cn(...classes: (string | undefined | false)[]) {
+  return classes.filter(Boolean).join(" ");
+}
 
 function toSrtTime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
@@ -257,20 +347,13 @@ function toSrtTime(seconds: number): string {
   return `${pad(h)}:${pad(m)}:${pad(s)},${pad(ms, 3)}`;
 }
 
-function toVttTime(seconds: number): string {
-  return toSrtTime(seconds).replace(",", ".");
-}
-
-function pad(n: number, len = 2): string {
-  return String(n).padStart(len, "0");
-}
+function toVttTime(seconds: number): string { return toSrtTime(seconds).replace(",", "."); }
+function pad(n: number, len = 2): string { return String(n).padStart(len, "0"); }
 
 function download(content: string, filename: string, mimeType: string) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
+  a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }

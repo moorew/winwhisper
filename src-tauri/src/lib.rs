@@ -20,6 +20,13 @@ fn get_engine_port(state: tauri::State<'_, Arc<EngineState>>) -> Option<u16> {
     *state.port.lock().unwrap()
 }
 
+#[tauri::command]
+fn open_external(url: String) {
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", "", &url])
+        .spawn();
+}
+
 pub fn run() {
     tauri::Builder::default()
         .manage(Arc::new(EngineState {
@@ -31,7 +38,7 @@ pub fn run() {
             spawn_engine(handle);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_engine_port])
+        .invoke_handler(tauri::generate_handler![get_engine_port, open_external])
         .run(tauri::generate_context!())
         .expect("error while running WinWhisper");
 }

@@ -58,6 +58,7 @@ export interface Speaker {
 export interface TranscriptDetail extends TranscriptSummary {
   job_id: string;
   language_probability: number | null;
+  source_path: string | null;
   segments: Segment[];
   speakers: Speaker[];
 }

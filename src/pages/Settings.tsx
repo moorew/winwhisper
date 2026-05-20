@@ -7,12 +7,21 @@ import {
   Loader2,
   AlertCircle,
   Check,
+  Info,
+  ExternalLink,
 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { api, ModelInfo, WatchFolderStatus, DictationStatus } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 function useTheme() {
@@ -73,6 +82,9 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [savedKey, setSavedKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -169,9 +181,23 @@ export default function Settings() {
     setTimeout(() => setSavedKey(null), 2000);
   }
 
+  async function handleCheckForUpdates() {
+    setCheckingUpdate(true);
+    setUpdateMsg(null);
+    try {
+      await invoke("open_external", { url: "https://github.com/moorew/winwhisper/releases" });
+      setUpdateMsg("Opening GitHub releases in your browser…");
+    } catch {
+      setUpdateMsg("Could not open browser. Visit github.com/moorew/winwhisper/releases manually.");
+    } finally {
+      setCheckingUpdate(false);
+    }
+  }
+
   const downloadedModels = models.filter((m) => m.is_downloaded);
 
   return (
+    <TooltipProvider>
     <div className="flex h-full flex-col overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2 border-b border-border px-4 py-3">
@@ -308,6 +334,14 @@ export default function Settings() {
                     className="accent-primary"
                   />
                   <span className="text-xs text-muted-foreground">Speaker diarization</span>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-3 w-3 text-muted-foreground/60 cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      Labels each line with who is speaking. Requires a HuggingFace token below.
+                    </TooltipContent>
+                  </Tooltip>
                 </label>
               </div>
             </div>
@@ -350,9 +384,22 @@ export default function Settings() {
 
           {/* HuggingFace Token */}
           <section>
-            <h2 className="text-sm font-semibold mb-1">HuggingFace Token</h2>
+            <div className="flex items-center gap-2 mb-1">
+              <h2 className="text-sm font-semibold">HuggingFace Token</h2>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent>
+                  HuggingFace hosts the speaker diarization model (pyannote.audio). The model is
+                  gated — you need a free account and must accept its license before WinWhisper
+                  can download it. Your token is stored locally and never sent anywhere else.
+                </TooltipContent>
+              </Tooltip>
+            </div>
             <p className="text-xs text-muted-foreground mb-3">
-              Required for pyannote.audio speaker diarization models (gated repos). Get yours at huggingface.co/settings/tokens.
+              Required for speaker diarization. Get your token at huggingface.co/settings/tokens,
+              then accept the license at pyannote/speaker-diarization-3.1.
             </p>
             <div className="flex gap-2">
               <Input
@@ -374,8 +421,36 @@ export default function Settings() {
             </div>
           </section>
 
+          <Separator />
+
+          {/* Updates */}
+          <section>
+            <h2 className="text-sm font-semibold mb-1">Updates</h2>
+            <p className="text-xs text-muted-foreground mb-3">
+              Current version: <span className="font-mono">0.1.0</span>
+            </p>
+            <div className="flex items-center gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCheckForUpdates}
+                disabled={checkingUpdate}
+              >
+                {checkingUpdate
+                  ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                  : <ExternalLink className="mr-2 h-3.5 w-3.5" />
+                }
+                Check for Updates
+              </Button>
+            </div>
+            {updateMsg && (
+              <p className="text-xs text-muted-foreground mt-2">{updateMsg}</p>
+            )}
+          </section>
+
         </div>
       </ScrollArea>
     </div>
+    </TooltipProvider>
   );
 }
