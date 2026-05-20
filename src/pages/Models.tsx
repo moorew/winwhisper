@@ -94,11 +94,17 @@ export default function Models() {
 
   async function handleDownload(name: string) {
     setBusy((b) => ({ ...b, [name]: true }));
+    setDownloadStates((prev) => ({ ...prev, [name]: { status: "downloading", progress: 0 } }));
     try {
       await api.models.download(name);
       startProgressStream(name);
     } catch (e) {
       console.error(e);
+      setDownloadStates((prev) => {
+        const next = { ...prev };
+        delete next[name];
+        return next;
+      });
     } finally {
       setBusy((b) => ({ ...b, [name]: false }));
     }

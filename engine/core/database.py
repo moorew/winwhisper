@@ -6,7 +6,7 @@ from typing import AsyncGenerator, List, Optional
 
 from sqlalchemy import (
     Boolean, Column, DateTime, Float, ForeignKey,
-    Integer, JSON, String, Text,
+    Integer, JSON, String, Text, text,
 )
 from sqlalchemy.ext.asyncio import (
     AsyncSession, async_sessionmaker, create_async_engine,
@@ -56,7 +56,11 @@ class Job(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     transcript_id = Column(String(36), ForeignKey("transcripts.id"), nullable=True)
-    transcript = relationship("Transcript", back_populates="job", uselist=False)
+    transcript = relationship(
+        "Transcript",
+        foreign_keys=[transcript_id],
+        uselist=False,
+    )
 
 
 class Transcript(Base):
@@ -74,7 +78,11 @@ class Transcript(Base):
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
-    job = relationship("Job", back_populates="transcript")
+    job = relationship(
+        "Job",
+        foreign_keys=[job_id],
+        uselist=False,
+    )
     segments = relationship(
         "Segment",
         back_populates="transcript",
@@ -150,7 +158,26 @@ class Setting(Base):
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _migrate_schema(conn)
     await _seed_defaults()
+
+
+async def _migrate_schema(conn) -> None:
+    """Apply lightweight SQLite migrations for users upgrading old builds."""
+    result = await conn.execute(text("PRAGMA table_info(downloaded_models)"))
+    columns = {row[1] for row in result.fetchall()}
+
+    migrations = {
+        "size_bytes": "ALTER TABLE downloaded_models ADD COLUMN size_bytes INTEGER",
+        "downloaded_at": "ALTER TABLE downloaded_models ADD COLUMN downloaded_at DATETIME",
+        "is_active": "ALTER TABLE downloaded_models ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 0",
+        "compute_type": "ALTER TABLE downloaded_models ADD COLUMN compute_type VARCHAR(20) NOT NULL DEFAULT 'int8'",
+        "hub_repo_id": "ALTER TABLE downloaded_models ADD COLUMN hub_repo_id VARCHAR(100)",
+    }
+
+    for column, statement in migrations.items():
+        if column not in columns:
+            await conn.execute(text(statement))
 
 
 async def _seed_defaults() -> None:

@@ -85,8 +85,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # ── Startup ──────────────────────────────────────────────────────────
     await init_db()
     worker.start()
-    await recover_stale_jobs()
-    await _restore_watch_folder()
+
+    try:
+        await recover_stale_jobs()
+    except Exception as exc:
+        print(f"[WinWhisper] Could not recover stale jobs: {exc}", flush=True)
+
+    try:
+        await _restore_watch_folder()
+    except Exception as exc:
+        print(f"[WinWhisper] Could not restore watch folder: {exc}", flush=True)
 
     hw = get_hardware()
     print(

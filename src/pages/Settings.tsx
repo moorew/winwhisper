@@ -427,7 +427,7 @@ export default function Settings() {
           <section>
             <h2 className="text-sm font-semibold mb-1">Updates</h2>
             <p className="text-xs text-muted-foreground mb-3">
-              Current version: <span className="font-mono">0.1.0</span>
+              Current version: <span className="font-mono">0.1.1</span>
             </p>
             <div className="flex items-center gap-3">
               <Button

@@ -16,23 +16,23 @@ if sys.platform == "win32":
     try:
         import keyboard as _keyboard  # type: ignore
         _KEYBOARD_AVAILABLE = True
-    except ImportError:
+    except Exception:
         pass
 
 try:
     from pynput.keyboard import Controller as _KbController  # type: ignore
     _PYNPUT_AVAILABLE = True
-except ImportError:
+except Exception:
     pass
 
 try:
     import pyaudio as _pyaudio  # type: ignore
     _PYAUDIO_AVAILABLE = True
-except ImportError:
+except Exception:
     try:
         import pyaudiowpatch as _pyaudio  # type: ignore
         _PYAUDIO_AVAILABLE = True
-    except ImportError:
+    except Exception:
         _PYAUDIO_AVAILABLE = False
         _pyaudio = None  # type: ignore
 

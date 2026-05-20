@@ -14,7 +14,7 @@ try:
     from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler, FileCreatedEvent, FileMovedEvent
     _WATCHDOG_AVAILABLE = True
-except ImportError:
+except Exception:
     _WATCHDOG_AVAILABLE = False
     Observer = None              # type: ignore
     FileSystemEventHandler = object  # type: ignore

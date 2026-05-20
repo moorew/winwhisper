@@ -63,16 +63,10 @@ pip install pyinstaller
 pyinstaller winwhisper_engine.spec
 ```
 
-This produces `engine/dist/winwhisper_engine.exe`.
+This produces the directory bundle `engine/dist/winwhisper_engine/`.
+The Tauri build bundles that directory as an application resource.
 
-### 2. Stage the sidecar
-
-```bash
-mkdir -p src-tauri/binaries
-copy engine\dist\winwhisper_engine.exe src-tauri\binaries\winwhisper_engine-x86_64-pc-windows-msvc.exe
-```
-
-### 3. Build the Tauri app
+### 2. Build the Tauri app
 
 ```bash
 npm install
@@ -81,9 +75,11 @@ npm run tauri:build
 
 The installer is output to `src-tauri/target/release/bundle/nsis/`.
 
-### Dev mode (without sidecar)
+### Dev mode
 
-Set `VITE_ENGINE_URL=http://127.0.0.1:49200` and run the engine manually:
+The Tauri shell can launch `engine/main.py` directly in dev mode when Python
+dependencies are installed. You can also run the engine manually and set
+`VITE_ENGINE_URL=http://127.0.0.1:49200`:
 
 ```bash
 # Terminal 1

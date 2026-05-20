@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from huggingface_hub import HfApi, snapshot_download
 from sqlalchemy import select
 
 from core.database import DownloadedModel, async_session_factory
@@ -45,6 +44,31 @@ class DownloadState:
 # Module-level state — lives for the lifetime of the server process
 _active: Dict[str, DownloadState] = {}
 _tasks: Dict[str, asyncio.Task] = {}
+_HF_API_CLS = None
+_HF_SNAPSHOT_DOWNLOAD = None
+_HF_IMPORT_ERROR: Optional[BaseException] = None
+
+
+def _get_huggingface_hub():
+    global _HF_API_CLS, _HF_SNAPSHOT_DOWNLOAD, _HF_IMPORT_ERROR
+    if _HF_API_CLS is not None and _HF_SNAPSHOT_DOWNLOAD is not None:
+        return _HF_API_CLS, _HF_SNAPSHOT_DOWNLOAD
+    if _HF_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "huggingface-hub is not available. Run: pip install huggingface-hub"
+        ) from _HF_IMPORT_ERROR
+
+    try:
+        from huggingface_hub import HfApi, snapshot_download
+    except Exception as exc:
+        _HF_IMPORT_ERROR = exc
+        raise RuntimeError(
+            "huggingface-hub is not available. Run: pip install huggingface-hub"
+        ) from exc
+
+    _HF_API_CLS = HfApi
+    _HF_SNAPSHOT_DOWNLOAD = snapshot_download
+    return _HF_API_CLS, _HF_SNAPSHOT_DOWNLOAD
 
 
 # ── Public helpers ────────────────────────────────────────────────────────────
@@ -64,8 +88,11 @@ def launch_download(
     hf_token: Optional[str],
 ) -> None:
     """Schedules a download task on the running event loop."""
+    state = DownloadState(model_name=model_name, total_bytes=0)
+    _active[model_name] = state
+
     task = asyncio.create_task(
-        _run_download(model_name, repo_id, hf_token),
+        _run_download(model_name, repo_id, hf_token, state),
         name=f"download-{model_name}",
     )
     _tasks[model_name] = task
@@ -109,7 +136,8 @@ async def list_downloaded() -> List[DownloadedModel]:
 def _get_repo_size_sync(repo_id: str, hf_token: Optional[str]) -> int:
     """Returns total byte count of all files in the HuggingFace repo."""
     try:
-        api = HfApi()
+        hf_api_cls, _ = _get_huggingface_hub()
+        api = hf_api_cls()
         info = api.repo_info(repo_id, files_metadata=True, token=hf_token)
         return sum(f.size or 0 for f in (info.siblings or []))
     except Exception:
@@ -117,7 +145,8 @@ def _get_repo_size_sync(repo_id: str, hf_token: Optional[str]) -> int:
 
 
 def _snapshot_sync(repo_id: str, local_dir: str, hf_token: Optional[str]) -> None:
-    snapshot_download(
+    _, hf_snapshot_download = _get_huggingface_hub()
+    hf_snapshot_download(
         repo_id=repo_id,
         local_dir=local_dir,
         token=hf_token,
@@ -174,15 +203,13 @@ async def _run_download(
     model_name: str,
     repo_id: str,
     hf_token: Optional[str],
+    state: DownloadState,
 ) -> None:
     model_path = storage.model_path(model_name)
     model_path.mkdir(parents=True, exist_ok=True)
 
     # Best-effort size estimate; 0 means indeterminate progress bar on frontend
-    total = await asyncio.to_thread(_get_repo_size_sync, repo_id, hf_token)
-
-    state = DownloadState(model_name=model_name, total_bytes=total)
-    _active[model_name] = state
+    state.total_bytes = await asyncio.to_thread(_get_repo_size_sync, repo_id, hf_token)
 
     monitor = asyncio.create_task(_monitor_dir(model_path, state))
 

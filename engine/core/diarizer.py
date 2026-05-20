@@ -4,12 +4,29 @@ from typing import List, Optional, Tuple
 
 from core.hardware import get_hardware
 
-try:
-    from pyannote.audio import Pipeline as PyannotePipeline
-    _PYANNOTE_AVAILABLE = True
-except ImportError:
-    _PYANNOTE_AVAILABLE = False
-    PyannotePipeline = None  # type: ignore
+_PYANNOTE_PIPELINE_CLS = None
+_PYANNOTE_IMPORT_ERROR: Optional[BaseException] = None
+
+
+def _get_pyannote_pipeline_cls():
+    global _PYANNOTE_PIPELINE_CLS, _PYANNOTE_IMPORT_ERROR
+    if _PYANNOTE_PIPELINE_CLS is not None:
+        return _PYANNOTE_PIPELINE_CLS
+    if _PYANNOTE_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "pyannote.audio is not available. Run: pip install pyannote.audio"
+        ) from _PYANNOTE_IMPORT_ERROR
+
+    try:
+        from pyannote.audio import Pipeline
+    except Exception as exc:
+        _PYANNOTE_IMPORT_ERROR = exc
+        raise RuntimeError(
+            "pyannote.audio is not available. Run: pip install pyannote.audio"
+        ) from exc
+
+    _PYANNOTE_PIPELINE_CLS = Pipeline
+    return _PYANNOTE_PIPELINE_CLS
 
 # Windows 11 accent colour palette — one per speaker
 SPEAKER_COLORS = [
@@ -74,14 +91,10 @@ class Diarizer:
         self._load(hf_token)
 
     def _load(self, hf_token: str) -> None:
-        if not _PYANNOTE_AVAILABLE:
-            raise RuntimeError(
-                "pyannote.audio is not installed. Run: pip install pyannote.audio"
-            )
-
+        pipeline_cls = _get_pyannote_pipeline_cls()
         self._pipeline = None   # free previous pipeline first
 
-        pipeline = PyannotePipeline.from_pretrained(
+        pipeline = pipeline_cls.from_pretrained(
             "pyannote/speaker-diarization-3.1",
             use_auth_token=hf_token,
         )

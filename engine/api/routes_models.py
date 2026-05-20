@@ -93,8 +93,17 @@ class ModelInfo(BaseModel):
 
 @router.get("", response_model=List[ModelInfo])
 async def list_models() -> List[ModelInfo]:
-    downloaded = {m.name: m for m in await model_manager.list_downloaded()}
-    active: str = await get_setting("active_model", "base")
+    try:
+        downloaded = {m.name: m for m in await model_manager.list_downloaded()}
+    except Exception as exc:
+        print(f"[WinWhisper] Could not read downloaded model metadata: {exc}", flush=True)
+        downloaded = {}
+
+    try:
+        active: str = await get_setting("active_model", "base")
+    except Exception as exc:
+        print(f"[WinWhisper] Could not read active model setting: {exc}", flush=True)
+        active = "base"
 
     result = []
     for name, info in MODEL_CATALOG.items():

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Routes, Route } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { setEnginePort } from "@/lib/api";
+import { api, setEnginePort } from "@/lib/api";
 import Layout from "@/components/Layout";
 import Onboarding from "@/components/Onboarding";
 import Dashboard from "@/pages/Dashboard";
@@ -26,7 +26,7 @@ export default function App() {
     // Primary: listen for the event emitted by Rust when the engine TCP port is live.
     const unlistenPromise = listen<number>("engine-ready", (event) => {
       applyPort(event.payload);
-    });
+    }).catch(() => null);
 
     // Fallback: poll every 2 s in case the event fires before the listener is attached
     // (e.g. very fast engine startup) or when running in dev without the Tauri shell.
@@ -36,14 +36,22 @@ export default function App() {
         const port = await invoke<number | null>("get_engine_port");
         if (port) applyPort(port);
       } catch {
-        // Running in browser dev mode — ignore
+        try {
+          const health = await api.health();
+          if (health.status === "ok") {
+            setEngineReady(true);
+            stopped = true;
+          }
+        } catch {
+          // Running in browser dev mode without a reachable engine.
+        }
       }
     }, 2000);
 
     return () => {
       stopped = true;
       clearInterval(poll);
-      unlistenPromise.then((fn) => fn());
+      unlistenPromise.then((fn) => fn?.());
     };
   }, []);
 

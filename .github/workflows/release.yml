@@ -48,23 +48,20 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Build Python sidecar (single-file EXE)
+      - name: Build Python sidecar
         shell: pwsh
         run: |
           cd engine
           pyinstaller winwhisper_engine.spec
 
-      - name: Stage engine for Tauri resources
+      - name: Verify engine bundle
         shell: pwsh
         run: |
           $src = "engine\dist\winwhisper_engine"
-          $dst = "src-tauri\resources\winwhisper_engine"
           if (-not (Test-Path $src)) { throw "PyInstaller output not found: $src" }
-          New-Item -ItemType Directory -Force -Path "src-tauri\resources" | Out-Null
-          Copy-Item -Recurse -Force $src $dst
-          if (-not (Test-Path "$dst\winwhisper_engine.exe")) { throw "Staged EXE missing at: $dst\winwhisper_engine.exe" }
-          $mb = [math]::Round((Get-Item "$dst\winwhisper_engine.exe").Length / 1MB, 1)
-          Write-Host "Staged engine directory: $dst (EXE is $mb MB)"
+          if (-not (Test-Path "$src\winwhisper_engine.exe")) { throw "Engine EXE missing at: $src\winwhisper_engine.exe" }
+          $mb = [math]::Round((Get-Item "$src\winwhisper_engine.exe").Length / 1MB, 1)
+          Write-Host "Engine directory ready for Tauri resources: $src (EXE is $mb MB)"
 
       # ── Node / Frontend ───────────────────────────────────────────────────
       - name: Set up Node.js 20

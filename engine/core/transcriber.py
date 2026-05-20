@@ -1,18 +1,34 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 from core.hardware import get_hardware
 from core.storage import storage
 
-try:
-    from faster_whisper import WhisperModel
-    from faster_whisper.transcribe import Segment, TranscriptionInfo
-    _FASTER_WHISPER_AVAILABLE = True
-except ImportError:
-    _FASTER_WHISPER_AVAILABLE = False
-    WhisperModel = None  # type: ignore
+_WHISPER_MODEL_CLS = None
+_WHISPER_IMPORT_ERROR: Optional[BaseException] = None
+
+
+def _get_whisper_model_cls():
+    global _WHISPER_MODEL_CLS, _WHISPER_IMPORT_ERROR
+    if _WHISPER_MODEL_CLS is not None:
+        return _WHISPER_MODEL_CLS
+    if _WHISPER_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "faster-whisper is not available. Run: pip install faster-whisper"
+        ) from _WHISPER_IMPORT_ERROR
+
+    try:
+        from faster_whisper import WhisperModel
+    except Exception as exc:
+        _WHISPER_IMPORT_ERROR = exc
+        raise RuntimeError(
+            "faster-whisper is not available. Run: pip install faster-whisper"
+        ) from exc
+
+    _WHISPER_MODEL_CLS = WhisperModel
+    return _WHISPER_MODEL_CLS
 
 
 class Transcriber:
@@ -40,12 +56,7 @@ class Transcriber:
         self._load(model_name)
 
     def _load(self, model_name: str) -> None:
-        if not _FASTER_WHISPER_AVAILABLE:
-            raise RuntimeError(
-                "faster-whisper is not installed. "
-                "Run: pip install faster-whisper"
-            )
-
+        whisper_model_cls = _get_whisper_model_cls()
         hw = get_hardware()
         model_path = storage.model_path(model_name)
 
@@ -59,7 +70,7 @@ class Transcriber:
         self._model = None
         self._model_name = None
 
-        self._model = WhisperModel(
+        self._model = whisper_model_cls(
             str(model_path),
             device=hw.recommended_device,
             compute_type=hw.recommended_compute_type,

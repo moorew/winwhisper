@@ -38,8 +38,11 @@ def _detect() -> HardwareInfo:
             pass
 
         if not cuda_available:
-            supported_types = list(ctranslate2.get_supported_compute_types("cpu"))
-    except ImportError:
+            try:
+                supported_types = list(ctranslate2.get_supported_compute_types("cpu"))
+            except Exception:
+                supported_types = ["int8", "float32"]
+    except Exception:
         supported_types = ["int8", "float32"]
 
     if cuda_available:

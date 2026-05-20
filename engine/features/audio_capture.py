@@ -19,15 +19,15 @@ if sys.platform == "win32":
     try:
         import pyaudiowpatch as _pa_mod  # type: ignore
         _WASAPI_AVAILABLE = True
-    except ImportError:
+    except Exception:
         try:
             import pyaudio as _pa_mod  # type: ignore
-        except ImportError:
+        except Exception:
             _pa_mod = None  # type: ignore
 else:
     try:
         import pyaudio as _pa_mod  # type: ignore
-    except ImportError:
+    except Exception:
         _pa_mod = None  # type: ignore
 
 _PA_AVAILABLE = _pa_mod is not None

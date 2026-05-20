@@ -47,6 +47,7 @@ export default function Onboarding() {
 
   function startDownload(name: string) {
     setDownloading(true);
+    setDownloadState({ status: "downloading", progress: 0 });
     api.models.download(name).then(() => {
       const es = new EventSource(api.models.progressUrl(name));
       esRef.current = es;
@@ -67,7 +68,10 @@ export default function Onboarding() {
         } catch { /* ignore */ }
       };
       es.onerror = () => { es.close(); setDownloading(false); };
-    }).catch(() => setDownloading(false));
+    }).catch(() => {
+      setDownloading(false);
+      setDownloadState(null);
+    });
   }
 
   useEffect(() => () => { esRef.current?.close(); }, []);
