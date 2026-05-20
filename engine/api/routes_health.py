@@ -11,7 +11,7 @@ from core.settings import get_setting
 
 router = APIRouter(tags=["system"])
 
-APP_VERSION = "0.2.1"
+APP_VERSION = "0.2.2"
 
 
 class HealthResponse(BaseModel):
