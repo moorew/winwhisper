@@ -1,6 +1,6 @@
 [package]
 name = "winwhisper"
-version = "0.1.7"
+version = "0.1.8"
 description = "WinWhisper — Premium Windows Transcription App"
 authors = []
 edition = "2021"
@@ -17,6 +17,7 @@ tauri        = { version = "2", features = ["tray-icon", "image-png"] }
 serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 tokio        = { version = "1", features = ["net", "time", "rt", "process", "io-util"] }
+zip          = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.dev]
 incremental = true

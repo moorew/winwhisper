@@ -153,6 +153,38 @@ jobs:
             throw "ucrtbase.dll could not be located — Python will not load on systems without UCRT."
           }
 
+      - name: Create _internal.zip for Tauri bundling
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Tauri's NSIS resource bundler reliably handles individual files but
+          # silently drops subdirectory structure when using **/* globs.
+          # PyInstaller's _internal/ contains package subdirs with .pyd extension
+          # modules (e.g. _internal/pydantic_core/_pydantic_core.cp311-win_amd64.pyd)
+          # that were never reaching the installed app. Fix: create a single ZIP
+          # of the entire _internal/ tree so Tauri can bundle it as one file,
+          # then extract it at first run in Rust.
+          $internalDir = Resolve-Path "engine\dist\winwhisper_engine\_internal"
+          $zipOut = Join-Path (Resolve-Path "engine\dist\winwhisper_engine") "_internal.zip"
+          if (Test-Path $zipOut) { Remove-Item $zipOut }
+          Write-Host "Creating $zipOut from $internalDir ..."
+          Add-Type -Assembly System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            $internalDir,
+            $zipOut,
+            [System.IO.Compression.CompressionLevel]::NoCompression,
+            $false   # don't include "_internal" as the root entry inside the ZIP
+          )
+          $sizeMB = [math]::Round((Get-Item $zipOut).Length / 1MB, 1)
+          Write-Host "_internal.zip created: $sizeMB MB"
+          # Quick sanity check: the ZIP must contain pydantic_core entry
+          $listing = & "C:\Program Files\7-Zip\7z.exe" l $zipOut 2>&1
+          $hasPydantic = $listing | Where-Object { $_ -match "pydantic_core" }
+          if (-not $hasPydantic) {
+            throw "_internal.zip does not contain pydantic_core — bundle is incomplete"
+          }
+          Write-Host "ZIP sanity check passed (pydantic_core present)."
+
       - name: Diagnose python311.dll dependencies
         shell: pwsh
         run: |
@@ -197,8 +229,10 @@ jobs:
           $src = "engine\dist\winwhisper_engine"
           if (-not (Test-Path $src)) { throw "PyInstaller output not found: $src" }
           if (-not (Test-Path "$src\winwhisper_engine.exe")) { throw "Engine EXE missing at: $src\winwhisper_engine.exe" }
-          $mb = [math]::Round((Get-Item "$src\winwhisper_engine.exe").Length / 1MB, 1)
-          Write-Host "Engine directory ready for Tauri resources: $src (EXE is $mb MB)"
+          if (-not (Test-Path "$src\_internal.zip")) { throw "_internal.zip missing — ZIP creation step must have failed" }
+          $exeMB  = [math]::Round((Get-Item "$src\winwhisper_engine.exe").Length / 1MB, 1)
+          $zipMB  = [math]::Round((Get-Item "$src\_internal.zip").Length   / 1MB, 1)
+          Write-Host "Engine bundle ready: EXE=$exeMB MB, _internal.zip=$zipMB MB"
 
       - name: Smoke-test bundled engine
         shell: pwsh
@@ -279,7 +313,7 @@ jobs:
       # the installer before publishing the release. Previous versions shipped
       # with _internal/ silently absent because the resource glob flattened
       # all subdirectory files into winwhisper_engine/ directly.
-      - name: Verify NSIS installer contains _internal
+      - name: Verify NSIS installer contains engine ZIP
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -291,25 +325,24 @@ jobs:
           if (-not (Test-Path $7z)) { throw "7-Zip not found — cannot verify installer contents" }
 
           $listing = & $7z l $installer.FullName 2>&1
-          Write-Host "---- 7z listing (first 60 lines) ----"
-          $listing | Select-Object -First 60 | ForEach-Object { Write-Host $_ }
+          Write-Host "---- 7z listing (first 40 lines) ----"
+          $listing | Select-Object -First 40 | ForEach-Object { Write-Host $_ }
           Write-Host "---- (end of listing preview) ----"
 
-          # The critical check: python311.dll must be inside _internal\
-          $hasInternal = $listing | Where-Object { $_ -match "_internal" }
-          $hasPython   = $listing | Where-Object { $_ -match "python311\.dll" }
+          # The installer must contain winwhisper_engine.exe and _internal.zip
+          # (no longer looking for individual DLLs — they're inside the ZIP).
+          $hasExe = $listing | Where-Object { $_ -match "winwhisper_engine\.exe" }
+          $hasZip = $listing | Where-Object { $_ -match "_internal\.zip" }
 
-          if (-not $hasInternal) {
-            Write-Host "ERROR: '_internal' not found in installer listing!"
-            Write-Host "Full listing:"
+          if (-not $hasExe) {
             $listing | ForEach-Object { Write-Host $_ }
-            throw "NSIS installer is MISSING the _internal directory — do not release this build"
+            throw "NSIS installer is MISSING winwhisper_engine.exe"
           }
-          if (-not $hasPython) {
-            Write-Host "ERROR: 'python311.dll' not found in installer listing!"
-            throw "NSIS installer is MISSING python311.dll — do not release this build"
+          if (-not $hasZip) {
+            $listing | ForEach-Object { Write-Host $_ }
+            throw "NSIS installer is MISSING _internal.zip — engine will fail to start"
           }
-          Write-Host "OK: _internal directory and python311.dll confirmed present in installer."
+          Write-Host "OK: winwhisper_engine.exe and _internal.zip confirmed present in installer."
 
       # ── Release ───────────────────────────────────────────────────────────
       - name: Collect installer artifacts

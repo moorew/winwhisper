@@ -1,8 +1,8 @@
 use std::{
     env,
     ffi::OsString,
-    fs::{File, OpenOptions},
-    io::Write,
+    fs::{self, File, OpenOptions},
+    io::{self, Write},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex},
@@ -252,6 +252,96 @@ fn is_leap(y: i32) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
+// ── _internal.zip extraction ─────────────────────────────────────────────────
+//
+// Tauri's NSIS bundler reliably handles individual files but silently drops
+// subdirectories when using **/* globs. PyInstaller v6's _internal/ contains
+// package subdirs (e.g. _internal/pydantic_core/_pydantic_core.cp311-win_amd64.pyd)
+// that never made it to the installed app. The fix: CI creates _internal.zip
+// (preserving the full directory tree), Tauri bundles the single ZIP file,
+// and this code extracts it once at first launch (or whenever the installer
+// puts down a newer ZIP — i.e. after an upgrade).
+
+fn extract_internal_zip(bundle_dir: &Path) -> Result<usize, String> {
+    let zip_path = bundle_dir.join("_internal.zip");
+    let dest = bundle_dir.join("_internal");
+
+    // Remove any stale or partially-extracted _internal/ before re-extracting.
+    if dest.is_dir() {
+        fs::remove_dir_all(&dest)
+            .map_err(|e| format!("remove stale _internal/: {e}"))?;
+    }
+    fs::create_dir_all(&dest)
+        .map_err(|e| format!("create _internal/: {e}"))?;
+
+    let f = File::open(&zip_path)
+        .map_err(|e| format!("open {}: {e}", zip_path.display()))?;
+    let mut archive = zip::ZipArchive::new(f)
+        .map_err(|e| format!("parse ZIP: {e}"))?;
+
+    let n = archive.len();
+    for i in 0..n {
+        let mut entry = archive.by_index(i)
+            .map_err(|e| format!("entry {i}: {e}"))?;
+
+        // enclosed_name() rejects path-traversal entries (e.g. ../foo)
+        let out_path = match entry.enclosed_name() {
+            Some(p) => dest.join(p),
+            None => continue,
+        };
+
+        if entry.is_dir() {
+            fs::create_dir_all(&out_path)
+                .map_err(|e| format!("mkdir {}: {e}", out_path.display()))?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("mkdir parent {}: {e}", parent.display()))?;
+            }
+            let mut w = File::create(&out_path)
+                .map_err(|e| format!("create {}: {e}", out_path.display()))?;
+            io::copy(&mut entry, &mut w)
+                .map_err(|e| format!("write {}: {e}", out_path.display()))?;
+        }
+    }
+
+    // Sentinel: written last so partial extractions are detectable.
+    let _ = File::create(dest.join(".extraction_complete"));
+    Ok(n)
+}
+
+fn needs_extraction(bundle_dir: &Path) -> bool {
+    let zip = bundle_dir.join("_internal.zip");
+    if !zip.is_file() {
+        return false;
+    }
+    let sentinel = bundle_dir.join("_internal").join(".extraction_complete");
+    if !sentinel.is_file() {
+        return true; // never extracted, or extraction was interrupted
+    }
+    // Re-extract when the installer has placed a newer _internal.zip (upgrade).
+    let zip_t = fs::metadata(&zip).and_then(|m| m.modified()).ok();
+    let sen_t = fs::metadata(&sentinel).and_then(|m| m.modified()).ok();
+    matches!((zip_t, sen_t), (Some(z), Some(s)) if z > s)
+}
+
+fn ensure_internal_ready(bundle_dir: &Path) -> bool {
+    if !needs_extraction(bundle_dir) {
+        return true;
+    }
+    log_line("[WinWhisper] EXTRACT: Unpacking engine internals (first run or update — ~10s)...");
+    match extract_internal_zip(bundle_dir) {
+        Ok(n) => {
+            log_line(&format!("[WinWhisper] EXTRACT: Unpacked {n} files into _internal/ — done."));
+            true
+        }
+        Err(e) => {
+            log_line(&format!("[WinWhisper] EXTRACT: Failed — {e}"));
+            false
+        }
+    }
+}
+
 // ── Engine spawn ────────────────────────────────────────────────────────────
 
 fn spawn_engine(handle: AppHandle) {
@@ -285,6 +375,23 @@ fn spawn_engine(handle: AppHandle) {
         ));
         for (i, c) in commands.iter().enumerate() {
             log_line(&format!("  [{i}] {}", c.label));
+        }
+
+        // ── Extract _internal.zip on first run / after upgrade ───────────────
+        // Tauri bundles _internal.zip as a single resource file.
+        // We extract it here rather than relying on the NSIS bundler to
+        // preserve PyInstaller's nested _internal/ subdirectory structure.
+        if let Some(first) = commands.first() {
+            let exe = PathBuf::from(&first.program);
+            if let Some(bd) = exe.parent() {
+                if !ensure_internal_ready(bd) {
+                    log_line(
+                        "[WinWhisper] FATAL: could not unpack engine internals — \
+                         share %APPDATA%\\WinWhisper\\engine.log for details.",
+                    );
+                    return;
+                }
+            }
         }
 
         // ── DLL preflight (Windows only) ─────────────────────────────────────
