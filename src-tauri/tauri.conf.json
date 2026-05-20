@@ -41,6 +41,7 @@
     "active": true,
     "targets": ["nsis"],
     "resources": {
+      "resources/winwhisper_engine/*": "winwhisper_engine/",
       "resources/winwhisper_engine/**/*": "winwhisper_engine/"
     },
     "icon": [

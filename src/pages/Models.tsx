@@ -43,8 +43,10 @@ export default function Models() {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const esRefs = useRef<Record<string, EventSource>>({});
 
-  const load = useCallback(() => {
-    setEngineError(false);
+  const load = useCallback((resetLoading = false) => {
+    if (resetLoading) setLoading(true);
+    // Never clear engineError at the top — retries run silently in the background.
+    // Only clear it when the API actually succeeds.
     api.models
       .list()
       .then((ms) => { setModels(ms); setEngineError(false); })
@@ -52,11 +54,13 @@ export default function Models() {
       .finally(() => setLoading(false));
   }, []);
 
-  // Initial load, then auto-retry every 4 s while the engine is still starting up.
-  useEffect(() => { load(); }, [load]);
+  // Initial load
+  useEffect(() => { load(true); }, [load]);
+  // Auto-retry every 6 s while the engine is unreachable.
+  // load() does NOT touch engineError on the way in, so there is no flash.
   useEffect(() => {
     if (!engineError) return;
-    const id = setInterval(load, 4000);
+    const id = setInterval(() => load(false), 6000);
     return () => clearInterval(id);
   }, [engineError, load]);
 
@@ -164,7 +168,7 @@ export default function Models() {
               </TooltipContent>
             </Tooltip>
           </div>
-          <Button variant="ghost" size="sm" onClick={load}>
+          <Button variant="ghost" size="sm" onClick={() => load(false)}>
             Refresh
           </Button>
         </div>
@@ -181,7 +185,7 @@ export default function Models() {
             <p className="text-xs opacity-70 max-w-xs">
               The transcription engine is still loading. This usually takes a few seconds.
             </p>
-            <Button variant="outline" size="sm" onClick={load}>
+            <Button variant="outline" size="sm" onClick={() => load(true)}>
               Try Again
             </Button>
           </div>
