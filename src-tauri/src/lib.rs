@@ -23,6 +23,58 @@ use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+// ── Windows: raw LoadLibrary FFI for diagnostic preflight ───────────────────
+//
+// We need the exact GetLastError() code from LoadLibrary so we can tell what
+// is actually missing. PyInstaller's bootloader only reports the generic
+// "module could not be found" message, which is useless once every direct
+// dependency is bundled.
+#[cfg(target_os = "windows")]
+mod win_diag {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryExW(lp_lib_file_name: *const u16, h_file: *mut u8, dw_flags: u32) -> *mut u8;
+        fn FreeLibrary(h_lib_module: *mut u8) -> i32;
+        fn GetLastError() -> u32;
+    }
+
+    const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
+
+    fn to_wide(s: &OsStr) -> Vec<u16> {
+        s.encode_wide().chain(Some(0)).collect()
+    }
+
+    pub fn err_name(code: u32) -> &'static str {
+        match code {
+            2 => "ERROR_FILE_NOT_FOUND (target DLL missing)",
+            3 => "ERROR_PATH_NOT_FOUND",
+            5 => "ERROR_ACCESS_DENIED (antivirus/EDR blocking?)",
+            126 => "ERROR_MOD_NOT_FOUND (a dependency DLL is missing)",
+            127 => "ERROR_PROC_NOT_FOUND (a dependency exports the wrong symbols — likely a UCRT/VCRuntime version mismatch)",
+            193 => "ERROR_BAD_EXE_FORMAT (32/64-bit mismatch)",
+            _ => "<see https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes>",
+        }
+    }
+
+    pub fn try_load(path: &Path) -> Result<(), u32> {
+        let wide = to_wide(path.as_os_str());
+        let h = unsafe {
+            LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH)
+        };
+        if h.is_null() {
+            let err = unsafe { GetLastError() };
+            Err(err)
+        } else {
+            unsafe { FreeLibrary(h) };
+            Ok(())
+        }
+    }
+}
+
 struct EngineState {
     port: Mutex<Option<u16>>,
 }
@@ -233,6 +285,22 @@ fn spawn_engine(handle: AppHandle) {
         ));
         for (i, c) in commands.iter().enumerate() {
             log_line(&format!("  [{i}] {}", c.label));
+        }
+
+        // ── DLL preflight (Windows only) ─────────────────────────────────────
+        // If we are about to spawn a PyInstaller bundle, sanity-check that
+        // python311.dll itself can be loaded from Rust. This bypasses the
+        // bootloader's generic error message and gives us the exact Win32
+        // error code, plus the full bundle DLL listing so we can see what
+        // is actually present at runtime.
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(first) = commands.first() {
+                let exe_path = PathBuf::from(&first.program);
+                if let Some(bundle_dir) = exe_path.parent() {
+                    preflight_dll_check(bundle_dir);
+                }
+            }
         }
 
         for (idx, command) in commands.iter().enumerate() {
@@ -519,6 +587,66 @@ fn push_python_source_commands(commands: &mut Vec<EngineCommand>, engine_dir: Pa
             cwd: engine_dir.clone(),
             label: format!("{program} main.py"),
         });
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn preflight_dll_check(bundle_dir: &Path) {
+    let internal = bundle_dir.join("_internal");
+    if !internal.is_dir() {
+        log_line(&format!(
+            "[WinWhisper] PREFLIGHT: _internal directory not found at {}",
+            internal.display()
+        ));
+        return;
+    }
+
+    // 1. List the bundle DLLs so future engine.log shares show what's present.
+    match std::fs::read_dir(&internal) {
+        Ok(entries) => {
+            let mut dlls: Vec<String> = entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.to_ascii_lowercase().ends_with(".dll"))
+                .collect();
+            dlls.sort();
+            log_line(&format!(
+                "[WinWhisper] PREFLIGHT: {} DLL(s) present in _internal:",
+                dlls.len()
+            ));
+            for d in &dlls {
+                log_line(&format!("    {d}"));
+            }
+        }
+        Err(e) => {
+            log_line(&format!("[WinWhisper] PREFLIGHT: failed to list _internal: {e}"));
+        }
+    }
+
+    // 2. Try LoadLibrary on each critical DLL — report the exact Win32 error.
+    //    Order matters: ucrtbase → vcruntime → python311. If ucrtbase fails,
+    //    python311 will too, and we want the leaf failure named explicitly.
+    let critical = [
+        "ucrtbase.dll",
+        "vcruntime140.dll",
+        "vcruntime140_1.dll",
+        "python311.dll",
+    ];
+    for dll in critical {
+        let path = internal.join(dll);
+        if !path.is_file() {
+            log_line(&format!("[WinWhisper] PREFLIGHT: {dll}: not present in _internal"));
+            continue;
+        }
+        match win_diag::try_load(&path) {
+            Ok(()) => log_line(&format!("[WinWhisper] PREFLIGHT: {dll}: LOAD OK")),
+            Err(code) => {
+                log_line(&format!(
+                    "[WinWhisper] PREFLIGHT: {dll}: LoadLibrary failed with Win32 error {code} — {}",
+                    win_diag::err_name(code)
+                ));
+            }
+        }
     }
 }
 

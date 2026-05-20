@@ -132,13 +132,15 @@ jobs:
             Copy-Item $ucrtbaseSrc $ucrtbaseDst -Force
             $ucrtCopied += "ucrtbase.dll"
           }
-          # All api-ms-win-crt-*.dll redirector DLLs
-          $apiDlls = Get-ChildItem $ucrtRoot -Filter "api-ms-win-crt-*.dll" -ErrorAction SilentlyContinue
-          # Fallback: api-set DLLs live under C:\Windows\System32\downlevel\ on some systems
-          if (-not $apiDlls -and (Test-Path "C:\Windows\System32\downlevel")) {
-            $apiDlls = Get-ChildItem "C:\Windows\System32\downlevel" -Filter "api-ms-win-crt-*.dll" -ErrorAction SilentlyContinue
+          # Copy *every* DLL from the UCRT redist (not just api-ms-win-crt-*).
+          # On some Windows variants python311.dll transitively pulls
+          # api-ms-win-core-* / api-ms-win-eventing-* / etc. that PyInstaller
+          # does not bundle. Casting a wider net costs ~1 MB and is harmless.
+          $allUcrtDlls = Get-ChildItem $ucrtRoot -Filter "*.dll" -ErrorAction SilentlyContinue
+          if (-not $allUcrtDlls -and (Test-Path "C:\Windows\System32\downlevel")) {
+            $allUcrtDlls = Get-ChildItem "C:\Windows\System32\downlevel" -Filter "*.dll" -ErrorAction SilentlyContinue
           }
-          foreach ($f in $apiDlls) {
+          foreach ($f in $allUcrtDlls) {
             $dst = Join-Path $target $f.Name
             if (-not (Test-Path $dst)) {
               Copy-Item $f.FullName $dst -Force
