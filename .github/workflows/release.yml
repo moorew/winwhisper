@@ -40,28 +40,84 @@ jobs:
       - name: Install Python dependencies
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           cd engine
+          # Fail fast on any pip error — silent failures here previously shipped
+          # an engine bundle with zero ML/web deps included.
           pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
           # CPU-only torch keeps the bundle under NSIS's 2 GB mmap limit.
           # GPU transcription still works via CTranslate2's own CUDA support.
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          if ($LASTEXITCODE -ne 0) { throw "torch install failed" }
           pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw "requirements.txt install failed" }
           pip install pyinstaller
+          if ($LASTEXITCODE -ne 0) { throw "pyinstaller install failed" }
 
       - name: Build Python sidecar
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           cd engine
           pyinstaller winwhisper_engine.spec
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 
       - name: Verify engine bundle
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $src = "engine\dist\winwhisper_engine"
           if (-not (Test-Path $src)) { throw "PyInstaller output not found: $src" }
           if (-not (Test-Path "$src\winwhisper_engine.exe")) { throw "Engine EXE missing at: $src\winwhisper_engine.exe" }
           $mb = [math]::Round((Get-Item "$src\winwhisper_engine.exe").Length / 1MB, 1)
           Write-Host "Engine directory ready for Tauri resources: $src (EXE is $mb MB)"
+
+      - name: Smoke-test bundled engine
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = "engine\dist\winwhisper_engine\winwhisper_engine.exe"
+          $cwd = (Resolve-Path "engine\dist\winwhisper_engine").Path
+          $logPath = Join-Path $env:RUNNER_TEMP "engine-smoke.log"
+          $errPath = Join-Path $env:RUNNER_TEMP "engine-smoke.err.log"
+          if (Test-Path $logPath) { Remove-Item $logPath }
+          if (Test-Path $errPath) { Remove-Item $errPath }
+          Write-Host "Spawning $exe — waiting up to 90s for WINWHISPER_PORT= ..."
+
+          # Redirect stdout/stderr to files so we never block on pipe reads.
+          # Mirror the runtime env Rust sets so buffering matches production.
+          $env:PYTHONUNBUFFERED = "1"
+          $env:PYTHONIOENCODING = "utf-8"
+          $proc = Start-Process -FilePath $exe -WorkingDirectory $cwd `
+            -RedirectStandardOutput $logPath -RedirectStandardError $errPath `
+            -NoNewWindow -PassThru
+
+          $port = $null
+          $deadline = [DateTime]::UtcNow.AddSeconds(90)
+          while ([DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+            if (Test-Path $logPath) {
+              $hit = Select-String -Path $logPath -Pattern '^WINWHISPER_PORT=(\d+)' -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($hit) {
+                $port = $hit.Matches[0].Groups[1].Value
+                break
+              }
+            }
+            if ($proc.HasExited) { break }
+          }
+
+          Write-Host "---- engine stdout ----"
+          if (Test-Path $logPath) { Get-Content $logPath | ForEach-Object { Write-Host "[engine] $_" } }
+          Write-Host "---- engine stderr ----"
+          if (Test-Path $errPath) { Get-Content $errPath | ForEach-Object { Write-Host "[engine!] $_" } }
+
+          if (-not $proc.HasExited) { try { $proc.Kill() } catch {} }
+
+          if ($port -eq $null) {
+            throw "Bundled engine did not print WINWHISPER_PORT= within 90s — bundle is broken (see logs above)"
+          }
+          Write-Host "Bundled engine announced port $port — bundle looks healthy."
 
       # ── Node / Frontend ───────────────────────────────────────────────────
       - name: Set up Node.js 20
