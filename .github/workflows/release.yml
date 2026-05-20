@@ -63,6 +63,50 @@ jobs:
           pyinstaller winwhisper_engine.spec
           if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 
+      - name: Bundle Visual C++ runtime DLLs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # python311.dll depends on the VC++ 2015-2022 runtime. The CI runner
+          # ships this in System32, so PyInstaller doesn't copy it into the
+          # bundle. End-user machines without Visual Studio installed do NOT
+          # have these DLLs, so python311.dll fails to LoadLibrary on launch
+          # with the misleading "module could not be found" error. Copy them
+          # next to python311.dll so the bundle is fully self-contained.
+          $target = "engine\dist\winwhisper_engine\_internal"
+          if (-not (Test-Path $target)) {
+            throw "Expected PyInstaller _internal dir at $target but it is missing"
+          }
+          $candidates = @(
+            "vcruntime140.dll",
+            "vcruntime140_1.dll",
+            "msvcp140.dll",
+            "msvcp140_1.dll",
+            "msvcp140_2.dll",
+            "concrt140.dll"
+          )
+          $copied = @()
+          $missing = @()
+          foreach ($dll in $candidates) {
+            $src = Join-Path "C:\Windows\System32" $dll
+            $dst = Join-Path $target $dll
+            if (Test-Path $dst) { continue }
+            if (Test-Path $src) {
+              Copy-Item $src $dst -Force
+              $copied += $dll
+            } else {
+              $missing += $dll
+            }
+          }
+          if ($copied.Count -gt 0) {
+            Write-Host "Bundled VC++ runtime DLLs: $($copied -join ', ')"
+          }
+          # vcruntime140.dll is the one that strictly must be present.
+          if (-not (Test-Path (Join-Path $target "vcruntime140.dll"))) {
+            throw "vcruntime140.dll could not be located or bundled — engine will not start on user machines."
+          }
+          Write-Host "VC++ runtime bundling complete. Missing optional DLLs: $($missing -join ', ')"
+
       - name: Verify engine bundle
         shell: pwsh
         run: |
