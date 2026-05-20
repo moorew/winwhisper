@@ -25,7 +25,7 @@ from core.job_worker import recover_stale_jobs, worker
 from core.settings import get_setting
 from core.storage import storage
 
-APP_VERSION = "0.1.8"
+APP_VERSION = "0.1.9"
 
 
 def _find_free_port(start: int = 49200, end: int = 49300) -> int:
