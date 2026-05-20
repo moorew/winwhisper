@@ -1,6 +1,8 @@
 use std::{
     env,
     ffi::OsString,
+    fs::{File, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex},
@@ -13,6 +15,13 @@ use tauri::{
     AppHandle, Emitter, Manager,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+// Windows: prevent the engine's console window from flashing on screen.
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 struct EngineState {
     port: Mutex<Option<u16>>,
@@ -101,47 +110,169 @@ fn toggle_window(app: &AppHandle, force_show: bool) {
     }
 }
 
+// ── Diagnostic log file ─────────────────────────────────────────────────────
+//
+// Everything written via `log_line` lands in %APPDATA%\WinWhisper\engine.log.
+// This is the only way to debug release builds: Tauri's stdout/stderr is gone
+// once the user double-clicks the installed exe.
+
+fn storage_dir() -> Option<PathBuf> {
+    let base = if cfg!(target_os = "windows") {
+        env::var_os("APPDATA").map(PathBuf::from).or_else(|| {
+            env::var_os("USERPROFILE")
+                .map(|p| PathBuf::from(p).join("AppData").join("Roaming"))
+        })
+    } else {
+        env::var_os("HOME").map(|p| PathBuf::from(p).join(".local").join("share"))
+    }?;
+    let dir = base.join("WinWhisper");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir)
+}
+
+fn log_path() -> Option<PathBuf> {
+    storage_dir().map(|d| d.join("engine.log"))
+}
+
+fn log_line(msg: &str) {
+    eprintln!("{msg}");
+    if let Some(path) = log_path() {
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
+            let stamped = format!("[{}] {msg}\n", chrono_ish_now());
+            let _ = f.write_all(stamped.as_bytes());
+        }
+    }
+}
+
+fn truncate_log() {
+    if let Some(path) = log_path() {
+        let _ = File::create(&path);
+    }
+}
+
+// Tiny timestamp without pulling in chrono. Format: 2026-05-20T15:30:42Z
+fn chrono_ish_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Naive UTC breakdown — good enough for log timestamps.
+    let (year, month, day, hh, mm, ss) = epoch_to_utc(secs as i64);
+    format!("{year:04}-{month:02}-{day:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+fn epoch_to_utc(mut secs: i64) -> (i32, u32, u32, u32, u32, u32) {
+    let ss = (secs % 60) as u32;
+    secs /= 60;
+    let mm = (secs % 60) as u32;
+    secs /= 60;
+    let hh = (secs % 24) as u32;
+    let mut days = secs / 24;
+    let mut year: i32 = 1970;
+    loop {
+        let leap = is_leap(year);
+        let ydays = if leap { 366 } else { 365 };
+        if days < ydays as i64 {
+            break;
+        }
+        days -= ydays as i64;
+        year += 1;
+    }
+    let mlens: [i64; 12] = [
+        31,
+        if is_leap(year) { 29 } else { 28 },
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    let mut month: u32 = 1;
+    for m in 0..12 {
+        if days < mlens[m] {
+            month = (m + 1) as u32;
+            break;
+        }
+        days -= mlens[m];
+    }
+    let day = (days + 1) as u32;
+    (year, month, day, hh, mm, ss)
+}
+
+fn is_leap(y: i32) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+// ── Engine spawn ────────────────────────────────────────────────────────────
+
 fn spawn_engine(handle: AppHandle) {
     let state = handle.state::<Arc<EngineState>>().inner().clone();
 
     tauri::async_runtime::spawn(async move {
+        truncate_log();
+        log_line(&format!(
+            "[WinWhisper] starting engine boot sequence (version {})",
+            env!("CARGO_PKG_VERSION")
+        ));
+
         if let Some(port) = attach_existing_engine(&state).await {
+            log_line(&format!("[WinWhisper] attached to existing engine on port {port}"));
             let _ = handle.emit("engine-ready", port);
             return;
         }
 
         let commands = resolve_engine_commands(&handle);
         if commands.is_empty() {
-            eprintln!(
-                "[WinWhisper] No packaged engine or Python source engine found. \
-                 Build the engine or set WINWHISPER_ENGINE_EXE."
+            log_line(
+                "[WinWhisper] FATAL: no engine binary found in any known location. \
+                 The installer is missing the sidecar.",
             );
             return;
         }
 
-        for command in commands {
-            let mut child = match spawn_engine_child(&command) {
+        log_line(&format!(
+            "[WinWhisper] {} engine candidate(s) discovered:",
+            commands.len()
+        ));
+        for (i, c) in commands.iter().enumerate() {
+            log_line(&format!("  [{i}] {}", c.label));
+        }
+
+        for (idx, command) in commands.iter().enumerate() {
+            log_line(&format!(
+                "[WinWhisper] attempting candidate [{idx}]: {}",
+                command.label
+            ));
+
+            let mut child = match spawn_engine_child(command) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("[WinWhisper] Failed to spawn {}: {e}", command.label);
+                    log_line(&format!(
+                        "[WinWhisper] spawn failed for {}: {e}",
+                        command.label
+                    ));
                     continue;
                 }
             };
 
             if run_engine_child(&handle, &state, &mut child).await {
+                log_line("[WinWhisper] engine is healthy — emitting engine-ready");
                 return;
             }
 
+            log_line(&format!(
+                "[WinWhisper] candidate [{idx}] never announced a port; killing and trying next.",
+            ));
             let _ = child.kill().await;
         }
 
-        eprintln!("[WinWhisper] Engine failed to start from all known locations");
+        log_line(
+            "[WinWhisper] FATAL: engine failed to start from every known location. \
+             Share %APPDATA%\\WinWhisper\\engine.log so we can see why.",
+        );
     });
 }
 
 fn spawn_engine_child(command: &EngineCommand) -> std::io::Result<tokio::process::Child> {
-    tokio::process::Command::new(&command.program)
-        .args(&command.args)
+    let mut cmd = tokio::process::Command::new(&command.program);
+    cmd.args(&command.args)
         .current_dir(&command.cwd)
         // Force line-buffered stdout so WINWHISPER_PORT= is flushed immediately.
         // Without this, Python uses block-buffering when stdout is a pipe and the
@@ -149,8 +280,16 @@ fn spawn_engine_child(command: &EngineCommand) -> std::io::Result<tokio::process
         .env("PYTHONUNBUFFERED", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+
+    // Windows-only: suppress the console window that flashes when spawning a
+    // console-subsystem PyInstaller bundle from a windowed Tauri parent.
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    cmd.spawn()
 }
 
 async fn run_engine_child(
@@ -158,19 +297,20 @@ async fn run_engine_child(
     state: &Arc<EngineState>,
     child: &mut tokio::process::Child,
 ) -> bool {
-    // Drain stderr in a separate task so it never blocks the child process.
+    // Drain stderr in a separate task and mirror it into engine.log so users
+    // can share the actual import / runtime error when something breaks.
     if let Some(stderr) = child.stderr.take() {
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                eprintln!("[engine] {line}");
+                log_line(&format!("[engine!] {line}"));
             }
         });
     }
 
     // Scan stdout for the WINWHISPER_PORT= announcement.
     let Some(stdout) = child.stdout.take() else {
-        eprintln!("[WinWhisper] Engine stdout was not captured");
+        log_line("[WinWhisper] engine stdout pipe was not captured");
         return false;
     };
     let mut lines = BufReader::new(stdout).lines();
@@ -184,9 +324,10 @@ async fn run_engine_child(
                         *state.port.lock().unwrap() = Some(p);
                         port = Some(p);
                     }
+                    log_line(&format!("[engine] {line}"));
                     break;
                 }
-                println!("[engine] {line}");
+                log_line(&format!("[engine] {line}"));
             }
             _ => break,
         }
@@ -195,15 +336,17 @@ async fn run_engine_child(
     let port = match port {
         Some(p) => p,
         None => {
-            eprintln!("[WinWhisper] Engine exited without announcing port");
+            log_line(
+                "[WinWhisper] engine exited or stdout closed without printing WINWHISPER_PORT=",
+            );
             return false;
         }
     };
 
-    // Keep draining stdout after the port announcement.
+    // Keep draining stdout after the port announcement so the pipe never fills.
     tauri::async_runtime::spawn(async move {
         while let Ok(Some(line)) = lines.next_line().await {
-            println!("[engine] {line}");
+            log_line(&format!("[engine] {line}"));
         }
     });
 
@@ -221,12 +364,12 @@ async fn run_engine_child(
 
     // Keep child alive for the app's lifetime.
     let _ = child.wait().await;
-    eprintln!("[WinWhisper] Engine process exited");
+    log_line("[WinWhisper] engine process exited");
     true
 }
 
 async fn attach_existing_engine(state: &Arc<EngineState>) -> Option<u16> {
-    let port_file = storage_port_file()?;
+    let port_file = storage_dir()?.join("engine.port");
     let port = std::fs::read_to_string(&port_file)
         .ok()
         .and_then(|s| s.trim().parse::<u16>().ok())?;
@@ -236,7 +379,6 @@ async fn attach_existing_engine(state: &Arc<EngineState>) -> Option<u16> {
     }
 
     *state.port.lock().unwrap() = Some(port);
-    eprintln!("[WinWhisper] Attached to existing engine on port {port}");
     Some(port)
 }
 
@@ -263,18 +405,6 @@ async fn engine_health_ok(port: u16) -> bool {
         .unwrap_or(false)
 }
 
-fn storage_port_file() -> Option<PathBuf> {
-    let base = if cfg!(target_os = "windows") {
-        env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .or_else(|| env::var_os("USERPROFILE").map(|p| PathBuf::from(p).join("AppData").join("Roaming")))
-    } else {
-        env::var_os("HOME").map(|p| PathBuf::from(p).join(".local").join("share"))
-    }?;
-
-    Some(base.join("WinWhisper").join("engine.port"))
-}
-
 fn resolve_engine_commands(handle: &AppHandle) -> Vec<EngineCommand> {
     let mut commands = Vec::new();
 
@@ -282,7 +412,9 @@ fn resolve_engine_commands(handle: &AppHandle) -> Vec<EngineCommand> {
         push_binary_command(&mut commands, PathBuf::from(path), true);
     }
 
+    // Production: Tauri places bundled resources under resource_dir/winwhisper_engine/.
     if let Ok(resource_dir) = handle.path().resource_dir() {
+        log_line(&format!("[WinWhisper] resource_dir: {}", resource_dir.display()));
         push_binary_command(
             &mut commands,
             resource_dir.join("winwhisper_engine").join("winwhisper_engine.exe"),
@@ -290,26 +422,20 @@ fn resolve_engine_commands(handle: &AppHandle) -> Vec<EngineCommand> {
         );
         push_binary_command(
             &mut commands,
-            resource_dir.join("winwhisper_engine").join("winwhisper_engine"),
-            false,
-        );
-        push_binary_command(
-            &mut commands,
-            resource_dir.join("winwhisper_engine.exe"),
+            resource_dir
+                .join("winwhisper_engine")
+                .join("winwhisper_engine"),
             false,
         );
     }
 
+    // Dev / sideloaded layouts: try the build output and any binary the developer
+    // copied next to the Tauri executable.
     if let Ok(current_exe) = env::current_exe() {
         if let Some(app_dir) = current_exe.parent() {
             push_binary_command(
                 &mut commands,
                 app_dir.join("winwhisper_engine").join("winwhisper_engine.exe"),
-                false,
-            );
-            push_binary_command(
-                &mut commands,
-                app_dir.join("resources").join("winwhisper_engine").join("winwhisper_engine.exe"),
                 false,
             );
         }
@@ -323,26 +449,24 @@ fn resolve_engine_commands(handle: &AppHandle) -> Vec<EngineCommand> {
 
     push_binary_command(
         &mut commands,
-        project_root.join("engine").join("dist").join("winwhisper_engine").join("winwhisper_engine.exe"),
-        false,
-    );
-    push_binary_command(
-        &mut commands,
-        project_root.join("engine").join("dist").join("winwhisper_engine.exe"),
-        false,
-    );
-    push_binary_command(
-        &mut commands,
-        manifest_dir.join("resources").join("winwhisper_engine").join("winwhisper_engine.exe"),
-        false,
-    );
-    push_binary_command(
-        &mut commands,
-        manifest_dir.join("binaries").join("winwhisper_engine-x86_64-pc-windows-msvc.exe"),
+        project_root
+            .join("engine")
+            .join("dist")
+            .join("winwhisper_engine")
+            .join("winwhisper_engine.exe"),
         false,
     );
 
     push_python_source_commands(&mut commands, project_root.join("engine"));
+
+    // Dedupe by canonicalised path so we don't spawn the same exe twice (this
+    // was the source of the "two console windows" report).
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    commands.retain(|c| {
+        let key = PathBuf::from(&c.program);
+        let canonical = std::fs::canonicalize(&key).unwrap_or(key);
+        seen.insert(canonical)
+    });
 
     commands
 }
