@@ -273,6 +273,44 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
+      # ── Verify NSIS installer contains _internal/ ─────────────────────────
+      # 7-Zip can read an NSIS installer's embedded archive. We use it to
+      # confirm that winwhisper_engine\_internal\python311.dll made it into
+      # the installer before publishing the release. Previous versions shipped
+      # with _internal/ silently absent because the resource glob flattened
+      # all subdirectory files into winwhisper_engine/ directly.
+      - name: Verify NSIS installer contains _internal
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Get-ChildItem "src-tauri\target\release\bundle\nsis\*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installer) { throw "NSIS installer not found in bundle output" }
+          Write-Host "Inspecting: $($installer.FullName)"
+
+          $7z = "C:\Program Files\7-Zip\7z.exe"
+          if (-not (Test-Path $7z)) { throw "7-Zip not found — cannot verify installer contents" }
+
+          $listing = & $7z l $installer.FullName 2>&1
+          Write-Host "---- 7z listing (first 60 lines) ----"
+          $listing | Select-Object -First 60 | ForEach-Object { Write-Host $_ }
+          Write-Host "---- (end of listing preview) ----"
+
+          # The critical check: python311.dll must be inside _internal\
+          $hasInternal = $listing | Where-Object { $_ -match "_internal" }
+          $hasPython   = $listing | Where-Object { $_ -match "python311\.dll" }
+
+          if (-not $hasInternal) {
+            Write-Host "ERROR: '_internal' not found in installer listing!"
+            Write-Host "Full listing:"
+            $listing | ForEach-Object { Write-Host $_ }
+            throw "NSIS installer is MISSING the _internal directory — do not release this build"
+          }
+          if (-not $hasPython) {
+            Write-Host "ERROR: 'python311.dll' not found in installer listing!"
+            throw "NSIS installer is MISSING python311.dll — do not release this build"
+          }
+          Write-Host "OK: _internal directory and python311.dll confirmed present in installer."
+
       # ── Release ───────────────────────────────────────────────────────────
       - name: Collect installer artifacts
         shell: pwsh
