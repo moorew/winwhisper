@@ -44,15 +44,17 @@ jobs:
           cd engine
           # Fail fast on any pip error — silent failures here previously shipped
           # an engine bundle with zero ML/web deps included.
-          pip install --upgrade pip
+          # `pip install --upgrade pip` fails on Windows — pip cannot replace its
+          # own running pip.exe, and modern pip refuses rather than trying.
+          python -m pip install --upgrade pip
           if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
           # CPU-only torch keeps the bundle under NSIS's 2 GB mmap limit.
           # GPU transcription still works via CTranslate2's own CUDA support.
-          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
           if ($LASTEXITCODE -ne 0) { throw "torch install failed" }
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
           if ($LASTEXITCODE -ne 0) { throw "requirements.txt install failed" }
-          pip install pyinstaller
+          python -m pip install pyinstaller
           if ($LASTEXITCODE -ne 0) { throw "pyinstaller install failed" }
 
       # Gate the release on the engine's own test suite — a broken API contract
@@ -61,7 +63,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          pip install pytest pytest-asyncio httpx
+          python -m pip install pytest pytest-asyncio httpx
           if ($LASTEXITCODE -ne 0) { throw "test dependency install failed" }
           cd engine
           pytest -q
