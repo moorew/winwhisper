@@ -13,7 +13,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri        = { version = "2", features = ["tray-icon", "image-png"] }
+# `protocol-asset` backs convertFileSrc(), which the transcript editor uses to
+# load audio into the waveform player. It must match assetProtocol.enable in
+# tauri.conf.json — the CLI silently injects it during `tauri build`, so without
+# it declared here a plain `cargo build`/`clippy` fails and the committed
+# manifest disagrees with the shipped binary.
+tauri        = { version = "2", features = ["tray-icon", "image-png", "protocol-asset"] }
 serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 tokio        = { version = "1", features = ["net", "time", "rt", "process", "io-util"] }

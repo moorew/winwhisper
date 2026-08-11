@@ -85,6 +85,23 @@ export interface DictationStatus {
   loaded_model: string | null;
 }
 
+export interface AudioDevice {
+  index: number;
+  name: string;
+  channels: number;
+  sample_rate: number;
+  is_loopback: boolean;
+  is_default_output: boolean;
+  is_default_input: boolean;
+}
+
+export interface CaptureStatus {
+  active: boolean;
+  loopback: boolean;
+  duration_seconds: number;
+  device_name: string | null;
+}
+
 export interface WatchFolderStatus {
   running: boolean;
   folder_path: string | null;
@@ -169,15 +186,24 @@ export const api = {
   },
 
   audio: {
-    devices: () => request<unknown[]>("/audio/devices"),
+    devices: () => request<AudioDevice[]>("/audio/devices"),
     startCapture: (body: { loopback?: boolean; device_index?: number }) =>
-      request<unknown>("/audio/capture/start", {
+      request<{ status: string; loopback: boolean; device: string | null }>("/audio/capture/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }),
-    stopCapture: () => request<unknown>("/audio/capture/stop", { method: "POST" }),
-    status: () => request<{ active: boolean; loopback: boolean; duration_seconds: number }>("/audio/capture/status"),
+    // The body is required — FastAPI rejects this endpoint with 422 without one.
+    stopCapture: (body: { transcribe?: boolean; model_name?: string; diarize?: boolean } = {}) =>
+      request<{ status: string; job_id?: string; job_type?: string; file: string | null }>(
+        "/audio/capture/stop",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcribe: true, ...body }),
+        }
+      ),
+    status: () => request<CaptureStatus>("/audio/capture/status"),
   },
 
   dictation: {

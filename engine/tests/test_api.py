@@ -155,6 +155,37 @@ def test_dictation_status_shape(client):
     assert {"active", "hotkey", "model_loaded", "loaded_model"} <= set(body)
 
 
+# ── System audio capture ─────────────────────────────────────────────────────
+
+def test_capture_status_shape(client):
+    body = client.get("/audio/capture/status").json()
+    assert {"active", "loopback", "duration_seconds", "device_name"} <= set(body)
+    assert body["active"] is False
+
+
+def test_stopping_capture_requires_a_body(client):
+    """
+    The stop endpoint takes a required model, so a bodyless POST is a 422 — the
+    API client used to send exactly that, which would have broken the feature
+    the moment any UI called it.
+    """
+    assert client.post("/audio/capture/stop").status_code == 422
+
+
+def test_stopping_with_no_active_session_is_409_not_a_crash(client):
+    r = client.post("/audio/capture/stop", json={"transcribe": True, "model_name": "tiny"})
+    assert r.status_code == 409
+
+
+def test_devices_endpoint_reports_missing_backend_cleanly(client):
+    # 200 where PyAudio/WASAPI is available (Windows), 503 with an actionable
+    # message where it is not. Never a 500.
+    r = client.get("/audio/devices")
+    assert r.status_code in (200, 503)
+    if r.status_code == 503:
+        assert "pyaudio" in r.json()["detail"].lower()
+
+
 # ── Transcript detail: source_path / source_available ────────────────────────
 
 @pytest.mark.asyncio

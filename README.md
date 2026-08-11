@@ -19,7 +19,8 @@ If you're on macOS, go buy MacWhisper — Jordi has done fantastic work and dese
 - **All Whisper model sizes** — tiny to large-v3, download in-app
 - **Speaker diarization** — who said what, powered by pyannote.audio
 - **YouTube transcription** — paste a URL, get a transcript
-- **System audio capture** — record what's playing (WASAPI loopback)
+- **System audio capture** — record what's playing via WASAPI loopback (the
+  **System** tab on the dashboard); transcribes automatically when you stop
 - **Watch folder** — drop files into a folder, they auto-transcribe
 - **Global dictation hotkey** — hold a key to record, release to type
 - **Microphone recording** — record straight from the dashboard
