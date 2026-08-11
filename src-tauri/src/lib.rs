@@ -75,6 +75,15 @@ mod win_diag {
     }
 }
 
+/// How long the engine gets to serve /health after announcing its port.
+/// Covers a cold first launch (unpacking + importing torch/ctranslate2) with
+/// room to spare, while still bounding a hung or crashed process.
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(240);
+
+/// How long the engine gets to print `WINWHISPER_PORT=` on stdout before we
+/// treat this candidate as dead and move on to the next one.
+const PORT_ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(180);
+
 struct EngineState {
     port: Mutex<Option<u16>>,
 }
@@ -491,9 +500,21 @@ async fn run_engine_child(
     let mut lines = BufReader::new(stdout).lines();
     let mut port: Option<u16> = None;
 
+    // Bounded wait for the announcement: an engine that hangs without printing
+    // anything and without closing stdout would otherwise block this task
+    // forever, leaving the UI stuck on "engine starting" with no log entry.
+    let announce_started = std::time::Instant::now();
     loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
+        let remaining = PORT_ANNOUNCE_TIMEOUT.saturating_sub(announce_started.elapsed());
+        if remaining.is_zero() {
+            log_line(&format!(
+                "[WinWhisper] engine printed no WINWHISPER_PORT= within {}s",
+                PORT_ANNOUNCE_TIMEOUT.as_secs()
+            ));
+            break;
+        }
+        match tokio::time::timeout(remaining, lines.next_line()).await {
+            Ok(Ok(Some(line))) => {
                 if let Some(rest) = line.trim().strip_prefix("WINWHISPER_PORT=") {
                     if let Ok(p) = rest.trim().parse::<u16>() {
                         *state.port.lock().unwrap() = Some(p);
@@ -504,6 +525,7 @@ async fn run_engine_child(
                 }
                 log_line(&format!("[engine] {line}"));
             }
+            // stdout closed, read error, or the deadline elapsed.
             _ => break,
         }
     }
@@ -525,13 +547,43 @@ async fn run_engine_child(
         }
     });
 
-    // Poll health until the engine accepts requests. No hard cap — on first launch
-    // the engine loads large ML libraries which can take 60-90 s on slow hardware.
-    loop {
+    // Poll health until the engine accepts requests. The cap is generous — on a
+    // first launch the engine unpacks and loads large ML libraries, which can
+    // take 60-90 s on slow hardware — but it is NOT unbounded: if the engine
+    // dies just after announcing its port (a crash while importing torch, say)
+    // an infinite poll would pin the app on a dead process forever, never
+    // logging a reason and never falling through to the next candidate.
+    let started = std::time::Instant::now();
+    let mut healthy = false;
+    while started.elapsed() < HEALTH_TIMEOUT {
         if engine_health_ok(port).await {
+            healthy = true;
             break;
         }
+        // No amount of further polling will revive an exited process.
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                log_line(&format!(
+                    "[WinWhisper] engine exited before serving /health (exit status: {status})"
+                ));
+                *state.port.lock().unwrap() = None;
+                return false;
+            }
+            Ok(None) => {}
+            Err(e) => {
+                log_line(&format!("[WinWhisper] could not poll engine process state: {e}"));
+            }
+        }
         tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    if !healthy {
+        log_line(&format!(
+            "[WinWhisper] engine announced port {port} but never served /health within {}s",
+            HEALTH_TIMEOUT.as_secs()
+        ));
+        *state.port.lock().unwrap() = None;
+        return false;
     }
 
     // Notify the frontend that the engine is ready with its port.
