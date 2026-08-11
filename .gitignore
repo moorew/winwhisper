@@ -31,3 +31,7 @@ release-artifacts/
 # OS
 .DS_Store
 Thumbs.db
+
+# Test caches
+.pytest_cache/
+engine/tests/__pycache__/
