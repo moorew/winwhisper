@@ -129,6 +129,14 @@ def test_transcribe_upload_queues_a_job(client):
     assert JOB_FIELDS <= set(job.json())
 
 
+def test_youtube_metadata_rejects_a_bad_url_cleanly(client):
+    # Backs the dashboard's preview card: a bad paste must produce a clean 400
+    # (yt-dlp absent gives the same), never a 500.
+    r = client.get("/youtube/metadata", params={"url": "not-a-real-url"})
+    assert r.status_code == 400
+    assert "detail" in r.json()
+
+
 def test_unknown_transcript_is_404(client):
     assert client.get(f"/transcripts/{uuid.uuid4()}").status_code == 404
 

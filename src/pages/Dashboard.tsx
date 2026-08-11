@@ -28,6 +28,7 @@ import {
   JobResponse,
   TranscriptSummary,
   TranscriptDetail,
+  YouTubeMetadata,
 } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -73,6 +74,8 @@ export default function Dashboard() {
   const [droppedPath, setDroppedPath] = useState<string | null>(null);
   const [droppedFile, setDroppedFile] = useState<File | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [ytPreview, setYtPreview] = useState<YouTubeMetadata | null>(null);
+  const [ytPreviewLoading, setYtPreviewLoading] = useState(false);
   const [opts, setOpts] = useState<TranscribeOptions>(DEFAULT_OPTS);
   const [isDragging, setIsDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -229,6 +232,28 @@ export default function Dashboard() {
       if (recordTimerRef.current) clearInterval(recordTimerRef.current);
     };
   }, []);
+
+  // Look up the video as soon as a URL is pasted, so the user can confirm they
+  // picked the right one (and catch a bad link) before committing to a job.
+  useEffect(() => {
+    const url = youtubeUrl.trim();
+    if (tab !== "youtube" || !/^https?:\/\//i.test(url)) {
+      setYtPreview(null);
+      return;
+    }
+
+    let cancelled = false;
+    setYtPreviewLoading(true);
+    const timer = setTimeout(() => {
+      api.transcribe
+        .youtubeMetadata(url)
+        .then((meta) => { if (!cancelled) setYtPreview(meta); })
+        .catch(() => { if (!cancelled) setYtPreview(null); })
+        .finally(() => { if (!cancelled) setYtPreviewLoading(false); });
+    }, 600);
+
+    return () => { cancelled = true; clearTimeout(timer); setYtPreviewLoading(false); };
+  }, [youtubeUrl, tab]);
 
   // ── System audio capture ───────────────────────────────────────────────
   // Recording happens in the engine (WASAPI loopback), so the UI just drives
@@ -457,6 +482,34 @@ export default function Dashboard() {
                   className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 />
               </div>
+
+              {ytPreviewLoading && (
+                <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>Looking up video…</span>
+                </div>
+              )}
+
+              {ytPreview && !ytPreviewLoading && (
+                <div className="flex gap-2 rounded-md border border-border p-2">
+                  {ytPreview.thumbnail && (
+                    <img
+                      src={ytPreview.thumbnail}
+                      alt=""
+                      className="h-12 w-20 flex-shrink-0 rounded object-cover"
+                    />
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium leading-snug line-clamp-2">
+                      {ytPreview.title}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground truncate">
+                      {ytPreview.uploader}
+                      {ytPreview.duration > 0 && ` · ${formatDuration(ytPreview.duration)}`}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

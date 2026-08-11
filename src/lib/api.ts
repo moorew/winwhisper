@@ -85,6 +85,13 @@ export interface DictationStatus {
   loaded_model: string | null;
 }
 
+export interface YouTubeMetadata {
+  title: string;
+  duration: number;
+  uploader: string;
+  thumbnail: string | null;
+}
+
 export interface AudioDevice {
   index: number;
   name: string;
@@ -167,9 +174,7 @@ export const api = {
       }),
 
     youtubeMetadata: (url: string) =>
-      request<{ title: string; duration: number; uploader: string; thumbnail: string | null }>(
-        `/youtube/metadata?url=${encodeURIComponent(url)}`
-      ),
+      request<YouTubeMetadata>(`/youtube/metadata?url=${encodeURIComponent(url)}`),
   },
 
   models: {
