@@ -85,8 +85,11 @@ export default function Settings() {
 
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
+  const [version, setVersion] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    // Reported by the engine so this never drifts from the shipped build.
+    api.health().then((h) => setVersion(h.version)).catch(() => {});
     try {
       const [ms, ws, ds, allSettings] = await Promise.all([
         api.models.list(),
@@ -427,7 +430,7 @@ export default function Settings() {
           <section>
             <h2 className="text-sm font-semibold mb-1">Updates</h2>
             <p className="text-xs text-muted-foreground mb-3">
-              Current version: <span className="font-mono">0.1.1</span>
+              Current version: <span className="font-mono">{version ?? "…"}</span>
             </p>
             <div className="flex items-center gap-3">
               <Button

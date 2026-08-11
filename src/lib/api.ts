@@ -58,7 +58,10 @@ export interface Speaker {
 export interface TranscriptDetail extends TranscriptSummary {
   job_id: string;
   language_probability: number | null;
+  /** Original media path, from the owning job. */
   source_path: string | null;
+  /** Whether that file still exists — uploads/YouTube temp files are deleted after transcription. */
+  source_available: boolean;
   segments: Segment[];
   speakers: Speaker[];
 }
@@ -99,6 +102,9 @@ export const api = {
     },
     get: (id: string) => request<JobResponse>(`/jobs/${id}`),
     cancel: (id: string) =>
+      request<{ cancelled: boolean; job_id: string }>(`/jobs/${id}/cancel`, { method: "POST" }),
+    /** Removes the job row entirely — used to dismiss a failed job from the UI. */
+    dismiss: (id: string) =>
       fetch(`${BASE_URL}/jobs/${id}`, { method: "DELETE" }),
   },
 

@@ -18,6 +18,7 @@ import {
   CheckSquare,
   Square as SquareIcon,
   Info,
+  X,
 } from "lucide-react";
 import { api, JobResponse, TranscriptSummary, TranscriptDetail } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -31,7 +32,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn, formatDuration, formatRelativeTime } from "@/lib/utils";
+import { cn, formatDuration, formatRelativeTime, parseEngineDate } from "@/lib/utils";
 
 type Tab = "file" | "youtube" | "record";
 
@@ -48,6 +49,9 @@ const DEFAULT_OPTS: TranscribeOptions = {
   diarize: false,
   translate: false,
 };
+
+/** How long a failed job stays in the panel before it stops being reported. */
+const FAILURE_VISIBLE_MS = 30 * 60 * 1000;
 
 interface DragDropPayload {
   paths: string[];
@@ -80,7 +84,7 @@ export default function Dashboard() {
   const [search, setSearch] = useState("");
   const [models, setModels] = useState<string[]>(["tiny", "base", "small", "medium", "large-v3"]);
   const [loadingTranscripts, setLoadingTranscripts] = useState(true);
-  const hadActiveJobsRef = useRef(false);
+  const activeCountRef = useRef(0);
 
   // Batch selection
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -103,34 +107,50 @@ export default function Dashboard() {
       .finally(() => setLoadingTranscripts(false));
   }, []);
 
-  const pollJobs = useCallback(() => {
-    api.jobs.list({ status: "processing" }).then((active) => {
-      setJobs(active);
-      return api.jobs.list({ status: "queued" });
-    }).then((queued) => {
-      setJobs((prev) => {
-        const ids = new Set(prev.map((j) => j.id));
-        return [...prev, ...queued.filter((j) => !ids.has(j.id))];
-      });
-    }).catch(() => {});
-  }, []);
+  const pollJobs = useCallback(async () => {
+    try {
+      // Failed jobs are fetched too — without them a failure just vanishes from
+      // the panel and the user never learns why their transcription didn't run.
+      const [processing, queued, failed] = await Promise.all([
+        api.jobs.list({ status: "processing" }),
+        api.jobs.list({ status: "queued" }),
+        api.jobs.list({ status: "failed", limit: 10 }),
+      ]);
+
+      const now = Date.now();
+      const recentFailures = failed.filter(
+        (j) => now - parseEngineDate(j.updated_at).getTime() < FAILURE_VISIBLE_MS
+      );
+
+      const active = [...processing, ...queued];
+      const activeCount = active.length;
+
+      // Refresh transcripts while work is in flight, plus one extra tick after
+      // the queue drains so the newly-finished transcript is picked up.
+      if (activeCount > 0 || activeCountRef.current > 0) loadTranscripts();
+      activeCountRef.current = activeCount;
+
+      setJobs([...active, ...recentFailures]);
+    } catch {
+      // Engine not reachable yet — leave the previous state alone.
+    }
+  }, [loadTranscripts]);
 
   useEffect(() => {
     loadTranscripts(true);
     pollJobs();
-    const id = setInterval(() => {
-      pollJobs();
-      setJobs((prev) => {
-        const wasActive = hadActiveJobsRef.current;
-        hadActiveJobsRef.current = prev.length > 0;
-        // Refresh transcripts while jobs are active, plus one extra tick after they clear
-        // so the newly-completed transcript is fetched before hadActive resets to false
-        if (prev.length > 0 || wasActive) loadTranscripts();
-        return prev;
-      });
-    }, 2000);
+    const id = setInterval(pollJobs, 2000);
     return () => clearInterval(id);
   }, [loadTranscripts, pollJobs]);
+
+  const dismissJob = useCallback(async (jobId: string) => {
+    setJobs((prev) => prev.filter((j) => j.id !== jobId));
+    try {
+      await api.jobs.dismiss(jobId);
+    } catch {
+      // Row may already be gone; the panel is updated either way.
+    }
+  }, []);
 
   // Tauri drag-drop
   useEffect(() => {
@@ -458,19 +478,38 @@ export default function Dashboard() {
           {/* Active jobs */}
           {jobs.length > 0 && (
             <div className="border-b border-border px-4 py-3 space-y-2">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">In Progress</p>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Activity</p>
               <div className="space-y-2">
                 {jobs.map((job) => (
-                  <div key={job.id} className="rounded-md bg-muted p-3 space-y-1.5">
-                    <div className="flex items-center justify-between">
+                  <div
+                    key={job.id}
+                    className={cn(
+                      "rounded-md p-3 space-y-1.5",
+                      job.status === "failed" ? "bg-destructive/10" : "bg-muted"
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-medium truncate">{job.source_name ?? "Untitled"}</span>
-                      <Badge variant={(statusColor[job.status] ?? "secondary") as "default" | "secondary" | "destructive" | "outline" | "success"}>
-                        {job.status}
-                      </Badge>
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <Badge variant={(statusColor[job.status] ?? "secondary") as "default" | "secondary" | "destructive" | "outline" | "success"}>
+                          {job.status}
+                        </Badge>
+                        {job.status === "failed" && (
+                          <button
+                            onClick={() => dismissJob(job.id)}
+                            title="Dismiss"
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                     {job.status === "processing" && <Progress value={(job.progress ?? 0) * 100} />}
-                    {job.status === "failed" && job.error_message && (
-                      <p className="text-xs text-destructive">{job.error_message}</p>
+                    {job.status === "failed" && (
+                      <p className="text-xs text-destructive break-words">
+                        {job.error_message ?? "Transcription failed."}
+                      </p>
                     )}
                   </div>
                 ))}

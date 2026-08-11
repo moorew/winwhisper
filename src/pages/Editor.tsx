@@ -19,7 +19,7 @@ import { api, TranscriptDetail, Speaker } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { formatDuration } from "@/lib/utils";
+import { formatDuration, safeFilename } from "@/lib/utils";
 
 const SPEAKER_COLORS = [
   "#3b82f6", "#ef4444", "#10b981", "#f59e0b",
@@ -42,6 +42,7 @@ export default function Editor() {
   const waveContainerRef = useRef<HTMLDivElement>(null);
   const wavesurferRef = useRef<import("wavesurfer.js").default | null>(null);
   const [waveReady, setWaveReady] = useState(false);
+  const [waveError, setWaveError] = useState(false);
   const [wavePlaying, setWavePlaying] = useState(false);
   const [waveTime, setWaveTime] = useState(0);
   const [waveDuration, setWaveDuration] = useState(0);
@@ -58,9 +59,12 @@ export default function Editor() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Mount waveform once transcript is loaded and has a source_path
+  // Mount waveform once transcript is loaded, but only when the source file is
+  // still on disk. Uploads and YouTube downloads are deleted from temp/ once
+  // transcription finishes, so those transcripts have no audio to play back.
   useEffect(() => {
-    if (!transcript?.source_path || !waveContainerRef.current) return;
+    if (!transcript?.source_path || !transcript.source_available) return;
+    if (!waveContainerRef.current) return;
 
     let destroyed = false;
     (async () => {
@@ -89,11 +93,14 @@ export default function Editor() {
         ws.on("pause", () => setWavePlaying(false));
         ws.on("finish", () => setWavePlaying(false));
         ws.on("timeupdate", (t) => setWaveTime(t));
+        // Without this the "Loading audio…" spinner would run forever when the
+        // asset protocol refuses the path or the codec is unsupported.
+        ws.on("error", () => { if (!destroyed) setWaveError(true); });
 
         const src = convertFileSrc(transcript.source_path!);
         ws.load(src);
       } catch {
-        // Waveform unavailable — degrade gracefully
+        if (!destroyed) setWaveError(true);
       }
     })();
 
@@ -103,8 +110,9 @@ export default function Editor() {
       wavesurferRef.current = null;
       setWaveReady(false);
       setWavePlaying(false);
+      setWaveError(false);
     };
-  }, [transcript?.source_path]);
+  }, [transcript?.source_path, transcript?.source_available]);
 
   function seekTo(seconds: number) {
     const ws = wavesurferRef.current;
@@ -145,7 +153,7 @@ export default function Editor() {
       const prefix = s.speaker_label ? `[${displayName(s.speaker_label)}] ` : "";
       return `${prefix}${s.text.trim()}`;
     }).join("\n");
-    download(text, `${transcript.title}.txt`, "text/plain");
+    download(text, `${safeFilename(transcript.title)}.txt`, "text/plain");
   }
 
   function exportSrt() {
@@ -153,7 +161,7 @@ export default function Editor() {
     const lines = transcript.segments.map((s, i) =>
       `${i + 1}\n${toSrtTime(s.start)} --> ${toSrtTime(s.end)}\n${s.text.trim()}\n`
     );
-    download(lines.join("\n"), `${transcript.title}.srt`, "text/plain");
+    download(lines.join("\n"), `${safeFilename(transcript.title)}.srt`, "text/plain");
   }
 
   function exportVtt() {
@@ -162,12 +170,12 @@ export default function Editor() {
     transcript.segments.forEach((s, i) => {
       lines.push(`${i + 1}`, `${toVttTime(s.start)} --> ${toVttTime(s.end)}`, s.text.trim(), "");
     });
-    download(lines.join("\n"), `${transcript.title}.vtt`, "text/vtt");
+    download(lines.join("\n"), `${safeFilename(transcript.title)}.vtt`, "text/vtt");
   }
 
   function exportJson() {
     if (!transcript) return;
-    download(JSON.stringify(transcript, null, 2), `${transcript.title}.json`, "application/json");
+    download(JSON.stringify(transcript, null, 2), `${safeFilename(transcript.title)}.json`, "application/json");
   }
 
   if (loading) {
@@ -236,8 +244,8 @@ export default function Editor() {
         </div>
       </div>
 
-      {/* Waveform player — shown only when source_path is available */}
-      {transcript.source_path && (
+      {/* Waveform player — only when the source media still exists on disk */}
+      {transcript.source_available && !waveError && (
         <div className="flex items-center gap-3 border-b border-border px-4 py-2 bg-muted/30">
           <button
             onClick={togglePlay}
@@ -354,6 +362,11 @@ function download(content: string, filename: string, mimeType: string) {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoking synchronously can abort the save in WebView2 — let the download start first.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
