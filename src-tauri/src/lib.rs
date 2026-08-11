@@ -16,8 +16,9 @@ use tauri::{
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
+// NOTE: no `std::os::windows::process::CommandExt` import here — tokio's
+// Command provides creation_flags() inherently on Windows, and importing the
+// std trait as well makes it an unused import.
 
 // Windows: prevent the engine's console window from flashing on screen.
 #[cfg(target_os = "windows")]
@@ -246,12 +247,12 @@ fn epoch_to_utc(mut secs: i64) -> (i32, u32, u32, u32, u32, u32) {
         31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
     ];
     let mut month: u32 = 1;
-    for m in 0..12 {
-        if days < mlens[m] {
-            month = (m + 1) as u32;
+    for (index, len) in mlens.iter().enumerate() {
+        if days < *len {
+            month = (index + 1) as u32;
             break;
         }
-        days -= mlens[m];
+        days -= *len;
     }
     let day = (days + 1) as u32;
     (year, month, day, hh, mm, ss)
