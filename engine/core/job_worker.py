@@ -4,7 +4,7 @@ import asyncio
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import select
 
@@ -12,16 +12,29 @@ from core.database import Job, Segment, Speaker, Transcript, async_session_facto
 from core.diarizer import SPEAKER_COLORS, diarizer, merge_speakers
 from core.settings import get_setting
 from core.storage import storage
-from core.transcriber import transcriber
+from core.transcriber import TranscriptionCancelled, transcriber
 
 # In-memory progress overlay: updated every segment during transcription,
 # cleared when the job finishes. Lets the API return live progress without
 # a DB write on every segment.
 _live_progress: Dict[str, float] = {}
 
+# Jobs the user has asked to abandon. Setting the DB status alone is not enough:
+# the worker would carry on transcribing and then overwrite the row with "done".
+_cancel_requested: Set[str] = set()
+
 
 def get_live_progress(job_id: str) -> Optional[float]:
     return _live_progress.get(job_id)
+
+
+def request_cancel(job_id: str) -> None:
+    """Asks the worker to abandon a job at the next segment boundary."""
+    _cancel_requested.add(job_id)
+
+
+def is_cancel_requested(job_id: str) -> bool:
+    return job_id in _cancel_requested
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -242,16 +255,24 @@ class JobWorker:
             except asyncio.CancelledError:
                 await _update_job(job_id, "failed", error="Server shutting down")
                 raise
+            except TranscriptionCancelled:
+                await _update_job(job_id, "cancelled", progress=0.0)
             except Exception as exc:
-                await _update_job(job_id, "failed", error=str(exc))
+                # A job the user abandoned should report as cancelled, not
+                # surface whatever error the interrupted run happened to raise.
+                if is_cancel_requested(job_id):
+                    await _update_job(job_id, "cancelled", progress=0.0)
+                else:
+                    await _update_job(job_id, "failed", error=str(exc))
             finally:
                 self._current_job_id = None
                 _live_progress.pop(job_id, None)
+                _cancel_requested.discard(job_id)
                 self._queue.task_done()
 
     async def _process(self, job_id: str) -> None:  # noqa: C901
         job = await _fetch_job(job_id)
-        if job is None or job.status == "cancelled":
+        if job is None or job.status == "cancelled" or is_cancel_requested(job_id):
             return
 
         await _update_job(job_id, "processing", progress=0.0)
@@ -294,15 +315,23 @@ class JobWorker:
             _live_progress[job_id] = prog_base + p * prog_scale * 0.95
 
         # ── Transcription ──────────────────────────────────────────────────
-        segments, info = await asyncio.to_thread(
-            transcriber.transcribe_with_progress,
-            audio_path,
-            on_progress=_on_progress,
-            language=opts.get("language") or None,
-            task="translate" if opts.get("translate") else "transcribe",
-            vad_filter=opts.get("vad_filter", True),
-            word_timestamps=opts.get("word_timestamps", True),
-        )
+        try:
+            segments, info = await asyncio.to_thread(
+                transcriber.transcribe_with_progress,
+                audio_path,
+                on_progress=_on_progress,
+                language=opts.get("language") or None,
+                task="translate" if opts.get("translate") else "transcribe",
+                vad_filter=opts.get("vad_filter", True),
+                word_timestamps=opts.get("word_timestamps", True),
+                should_continue=lambda: not is_cancel_requested(job_id),
+            )
+        except TranscriptionCancelled:
+            # Don't leave the user's temp upload behind just because they
+            # changed their mind part-way through.
+            if temp_audio:
+                await _cleanup_temp(temp_audio)
+            raise
 
         # ── Diarization (0.95 → 0.99, optional) ──────────────────────────
         speaker_labels: List[Optional[str]] = [None] * len(segments)

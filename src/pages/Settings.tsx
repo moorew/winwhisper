@@ -85,8 +85,19 @@ export default function Settings() {
 
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
+  const [version, setVersion] = useState<string | null>(null);
+  const [hardware, setHardware] = useState<{
+    recommended_device: string;
+    gpu_name: string | null;
+    cpu: string;
+  } | null>(null);
 
   const load = useCallback(async () => {
+    // Reported by the engine so this never drifts from the shipped build.
+    api.health().then((h) => setVersion(h.version)).catch(() => {});
+    api.status()
+      .then((s) => setHardware(s.hardware as typeof hardware))
+      .catch(() => {});
     try {
       const [ms, ws, ds, allSettings] = await Promise.all([
         api.models.list(),
@@ -423,11 +434,41 @@ export default function Settings() {
 
           <Separator />
 
+          {/* Processing hardware */}
+          <section>
+            <h2 className="text-sm font-semibold mb-1">Processing</h2>
+            <p className="text-xs text-muted-foreground mb-3">
+              Where transcription runs. A GPU is used when one is available and
+              working; otherwise WinWhisper falls back to the CPU automatically —
+              slower, but everything still works.
+            </p>
+            <div className="rounded-lg border border-border p-3 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Device</span>
+                <span className="text-sm font-medium">
+                  {hardware
+                    ? hardware.recommended_device === "cuda"
+                      ? `GPU — ${hardware.gpu_name ?? "NVIDIA"}`
+                      : "CPU"
+                    : "…"}
+                </span>
+              </div>
+              {hardware?.recommended_device !== "cuda" && hardware && (
+                <p className="text-xs text-muted-foreground">
+                  No usable NVIDIA GPU was detected. Larger models will be slow —
+                  <strong> base</strong> or <strong>small</strong> are good choices on CPU.
+                </p>
+              )}
+            </div>
+          </section>
+
+          <Separator />
+
           {/* Updates */}
           <section>
             <h2 className="text-sm font-semibold mb-1">Updates</h2>
             <p className="text-xs text-muted-foreground mb-3">
-              Current version: <span className="font-mono">0.1.1</span>
+              Current version: <span className="font-mono">{version ?? "…"}</span>
             </p>
             <div className="flex items-center gap-3">
               <Button

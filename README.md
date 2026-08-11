@@ -19,11 +19,17 @@ If you're on macOS, go buy MacWhisper — Jordi has done fantastic work and dese
 - **All Whisper model sizes** — tiny to large-v3, download in-app
 - **Speaker diarization** — who said what, powered by pyannote.audio
 - **YouTube transcription** — paste a URL, get a transcript
-- **System audio capture** — record what's playing (WASAPI loopback)
+- **System audio capture** — record what's playing via WASAPI loopback (the
+  **System** tab on the dashboard); transcribes automatically when you stop
 - **Watch folder** — drop files into a folder, they auto-transcribe
 - **Global dictation hotkey** — hold a key to record, release to type
-- **Export** — TXT, SRT, VTT, JSON
+- **Microphone recording** — record straight from the dashboard
+- **Waveform playback** — scrub the audio and click any line to jump to it
+- **Export** — TXT, SRT, VTT, JSON, plus batch export of several transcripts
 - **Dark/light mode**
+
+Transcription runs on the GPU when one is usable and falls back to CPU
+automatically — a missing or mismatched CUDA runtime makes it slower, not broken.
 
 ## Installation
 
@@ -74,6 +80,26 @@ npm run tauri:build
 ```
 
 The installer is output to `src-tauri/target/release/bundle/nsis/`.
+
+### Tests
+
+```bash
+# Frontend unit tests
+npm test
+
+# Engine API contract tests — seconds, no ML stack needed
+pip install -r engine/requirements-dev.txt
+cd engine && pytest -q
+```
+
+The engine's heavy imports (torch, faster-whisper, pyannote) are all lazy, so
+the full HTTP surface is testable without installing them. The end-to-end test
+that downloads a real model and transcribes audio is opt-in:
+
+```bash
+pip install -r engine/requirements.txt
+cd engine && WINWHISPER_E2E=1 pytest tests/test_transcription_e2e.py -v
+```
 
 ### Dev mode
 
@@ -138,11 +164,13 @@ The Tauri shell spawns the Python engine as a sidecar, reads the port it announc
 
 PRs and issues welcome. This is early-stage software — there's plenty to improve.
 
+Please run the tests before opening a PR — CI runs them on every push.
+
 A few areas that would make good first contributions:
-- Waveform playback in the transcript editor
-- Microphone recording from the dashboard
-- Batch export of multiple transcripts
-- Auto-update support
+- Auto-update support (currently "Check for Updates" just opens the releases page)
+- Editable transcript text (segments are read-only today)
+- Translation targets other than English
+- A proper hotkey capture widget for dictation, instead of typing the combo
 
 ## Licence
 

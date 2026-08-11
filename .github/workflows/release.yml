@@ -55,6 +55,18 @@ jobs:
           pip install pyinstaller
           if ($LASTEXITCODE -ne 0) { throw "pyinstaller install failed" }
 
+      # Gate the release on the engine's own test suite — a broken API contract
+      # or a regressed GPU fallback should never reach an installer.
+      - name: Run engine tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          pip install pytest pytest-asyncio httpx
+          if ($LASTEXITCODE -ne 0) { throw "test dependency install failed" }
+          cd engine
+          pytest -q
+          if ($LASTEXITCODE -ne 0) { throw "engine tests failed" }
+
       - name: Build Python sidecar
         shell: pwsh
         run: |
@@ -289,6 +301,9 @@ jobs:
 
       - name: Install npm dependencies
         run: npm install
+
+      - name: Run frontend tests
+        run: npm test
 
       # ── Rust / Tauri ──────────────────────────────────────────────────────
       - name: Set up Rust stable

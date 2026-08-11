@@ -22,8 +22,21 @@ export function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+/**
+ * Parses a timestamp from the engine.
+ *
+ * The engine stores naive UTC (`datetime.utcnow()`), so its ISO strings carry
+ * no timezone marker — and ECMAScript parses a bare date-time as *local* time.
+ * Without this, every timestamp is wrong by the user's UTC offset. Appending
+ * "Z" pins it to UTC; strings that already carry an offset are left alone.
+ */
+export function parseEngineDate(dateStr: string): Date {
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(dateStr.trim());
+  return new Date(hasZone ? dateStr : `${dateStr}Z`);
+}
+
 export function formatRelativeTime(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
+  const diff = Date.now() - parseEngineDate(dateStr).getTime();
   const minutes = Math.floor(diff / 60000);
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes}m ago`;
@@ -31,4 +44,25 @@ export function formatRelativeTime(dateStr: string): string {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.floor(hours / 24);
   return `${days}d ago`;
+}
+
+/**
+ * Strips characters Windows forbids in filenames. Transcript titles come from
+ * source filenames and YouTube video titles, which routinely contain ":" and
+ * "|" — leaving those in makes the save silently fail.
+ */
+export function safeFilename(name: string, fallback = "transcript"): string {
+  const cleaned = name
+    // eslint-disable-next-line no-control-regex
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
+    .replace(/\s+/g, " ")
+    // Windows also rejects names ending in a dot or a space.
+    .replace(/^[. ]+|[. ]+$/g, "")
+    .slice(0, 120)
+    .trim();
+  // CON, PRN, AUX, NUL, COM1-9 and LPT1-9 are reserved device names on Windows.
+  if (!cleaned || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(cleaned)) {
+    return fallback;
+  }
+  return cleaned;
 }

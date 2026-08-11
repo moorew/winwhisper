@@ -89,6 +89,13 @@ class TranscriptResponse(BaseModel):
     word_count: int
     source_type: str
     created_at: datetime
+    # Original media path, taken from the owning job. Present so the editor can
+    # render a waveform player; None when the job row is gone.
+    source_path: Optional[str]
+    # Whether that file still exists on disk. Uploads and YouTube downloads live
+    # in temp/ and are deleted once transcription finishes, so a non-null
+    # source_path is not on its own enough to play audio back.
+    source_available: bool
     segments: List[SegmentResponse]
     speakers: List[SpeakerResponse]
 
@@ -265,19 +272,40 @@ async def list_transcripts(
 async def get_transcript(
     transcript_id: str,
     session: AsyncSession = Depends(get_session),
-) -> Transcript:
+) -> TranscriptResponse:
     result = await session.execute(
         select(Transcript)
         .where(Transcript.id == transcript_id)
         .options(
             selectinload(Transcript.segments),
             selectinload(Transcript.speakers),
+            selectinload(Transcript.job),
         )
     )
     transcript = result.scalar_one_or_none()
     if not transcript:
         raise HTTPException(404, "Transcript not found")
-    return transcript
+
+    # source_path lives on the job, not the transcript. Surface it (plus a
+    # liveness check) so the editor knows whether it can offer playback.
+    source_path = transcript.job.source_path if transcript.job else None
+    source_available = bool(source_path and Path(source_path).is_file())
+
+    return TranscriptResponse(
+        id=transcript.id,
+        job_id=transcript.job_id,
+        title=transcript.title,
+        language=transcript.language,
+        language_probability=transcript.language_probability,
+        duration=transcript.duration,
+        word_count=transcript.word_count,
+        source_type=transcript.source_type,
+        created_at=transcript.created_at,
+        source_path=source_path,
+        source_available=source_available,
+        segments=[SegmentResponse.model_validate(s) for s in transcript.segments],
+        speakers=[SpeakerResponse.model_validate(s) for s in transcript.speakers],
+    )
 
 
 @router.delete("/transcripts/{transcript_id}", status_code=204)

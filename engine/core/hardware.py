@@ -29,13 +29,27 @@ def _detect() -> HardwareInfo:
 
     try:
         import ctranslate2
+
+        # `get_supported_compute_types("cuda")` answers "what was this build
+        # compiled for?", NOT "is there a GPU here?" — the PyPI wheels are built
+        # with CUDA support, so it happily returns float16 on a machine with no
+        # NVIDIA card and no CUDA runtime. Trusting it selects device="cuda" and
+        # every job then dies with "Library cublas64_12.dll is not found".
+        # Ask for an actual device count first; that is the authoritative check.
+        device_count = 0
         try:
-            cuda_types = list(ctranslate2.get_supported_compute_types("cuda"))
-            if cuda_types:
-                cuda_available = True
-                supported_types = cuda_types
+            device_count = ctranslate2.get_cuda_device_count()
         except Exception:
-            pass
+            device_count = 0
+
+        if device_count > 0:
+            try:
+                cuda_types = list(ctranslate2.get_supported_compute_types("cuda"))
+                if cuda_types:
+                    cuda_available = True
+                    supported_types = cuda_types
+            except Exception:
+                pass
 
         if not cuda_available:
             try:

@@ -9,7 +9,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import Job, get_session
-from core.job_worker import get_live_progress
+from core.job_worker import get_live_progress, request_cancel
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -72,6 +72,12 @@ async def cancel_job(
         raise HTTPException(404, "Job not found")
     if job.status not in ("queued", "processing"):
         raise HTTPException(409, f"Job is already {job.status}")
+
+    # Signal the worker as well as writing the status: for a job already being
+    # transcribed, the DB row alone was ignored and then overwritten with "done"
+    # when the run finished. The worker stops at the next segment boundary.
+    request_cancel(job_id)
+
     job.status = "cancelled"
     job.updated_at = datetime.utcnow()
     await session.commit()

@@ -18,8 +18,18 @@ import {
   CheckSquare,
   Square as SquareIcon,
   Info,
+  X,
+  Volume2,
 } from "lucide-react";
-import { api, JobResponse, TranscriptSummary, TranscriptDetail } from "@/lib/api";
+import {
+  api,
+  AudioDevice,
+  CaptureStatus,
+  JobResponse,
+  TranscriptSummary,
+  TranscriptDetail,
+  YouTubeMetadata,
+} from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -31,9 +41,9 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn, formatDuration, formatRelativeTime } from "@/lib/utils";
+import { cn, formatDuration, formatRelativeTime, parseEngineDate } from "@/lib/utils";
 
-type Tab = "file" | "youtube" | "record";
+type Tab = "file" | "youtube" | "record" | "system";
 
 interface TranscribeOptions {
   model: string;
@@ -49,6 +59,9 @@ const DEFAULT_OPTS: TranscribeOptions = {
   translate: false,
 };
 
+/** How long a failed job stays in the panel before it stops being reported. */
+const FAILURE_VISIBLE_MS = 30 * 60 * 1000;
+
 interface DragDropPayload {
   paths: string[];
   position: { x: number; y: number };
@@ -61,6 +74,8 @@ export default function Dashboard() {
   const [droppedPath, setDroppedPath] = useState<string | null>(null);
   const [droppedFile, setDroppedFile] = useState<File | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [ytPreview, setYtPreview] = useState<YouTubeMetadata | null>(null);
+  const [ytPreviewLoading, setYtPreviewLoading] = useState(false);
   const [opts, setOpts] = useState<TranscribeOptions>(DEFAULT_OPTS);
   const [isDragging, setIsDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -74,13 +89,19 @@ export default function Dashboard() {
   const chunksRef = useRef<Blob[]>([]);
   const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // System audio capture (WASAPI loopback) — driven entirely by the engine
+  const [captureStatus, setCaptureStatus] = useState<CaptureStatus | null>(null);
+  const [loopbackDevices, setLoopbackDevices] = useState<AudioDevice[] | null>(null);
+  const [captureError, setCaptureError] = useState<string | null>(null);
+  const [captureBusy, setCaptureBusy] = useState(false);
+
   // Data state
   const [transcripts, setTranscripts] = useState<TranscriptSummary[]>([]);
   const [jobs, setJobs] = useState<JobResponse[]>([]);
   const [search, setSearch] = useState("");
   const [models, setModels] = useState<string[]>(["tiny", "base", "small", "medium", "large-v3"]);
   const [loadingTranscripts, setLoadingTranscripts] = useState(true);
-  const hadActiveJobsRef = useRef(false);
+  const activeCountRef = useRef(0);
 
   // Batch selection
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -103,34 +124,59 @@ export default function Dashboard() {
       .finally(() => setLoadingTranscripts(false));
   }, []);
 
-  const pollJobs = useCallback(() => {
-    api.jobs.list({ status: "processing" }).then((active) => {
-      setJobs(active);
-      return api.jobs.list({ status: "queued" });
-    }).then((queued) => {
-      setJobs((prev) => {
-        const ids = new Set(prev.map((j) => j.id));
-        return [...prev, ...queued.filter((j) => !ids.has(j.id))];
-      });
-    }).catch(() => {});
-  }, []);
+  const pollJobs = useCallback(async () => {
+    try {
+      // Failed jobs are fetched too — without them a failure just vanishes from
+      // the panel and the user never learns why their transcription didn't run.
+      const [processing, queued, failed] = await Promise.all([
+        api.jobs.list({ status: "processing" }),
+        api.jobs.list({ status: "queued" }),
+        api.jobs.list({ status: "failed", limit: 10 }),
+      ]);
+
+      const now = Date.now();
+      const recentFailures = failed.filter(
+        (j) => now - parseEngineDate(j.updated_at).getTime() < FAILURE_VISIBLE_MS
+      );
+
+      const active = [...processing, ...queued];
+      const activeCount = active.length;
+
+      // Refresh transcripts while work is in flight, plus one extra tick after
+      // the queue drains so the newly-finished transcript is picked up.
+      if (activeCount > 0 || activeCountRef.current > 0) loadTranscripts();
+      activeCountRef.current = activeCount;
+
+      setJobs([...active, ...recentFailures]);
+    } catch {
+      // Engine not reachable yet — leave the previous state alone.
+    }
+  }, [loadTranscripts]);
 
   useEffect(() => {
     loadTranscripts(true);
     pollJobs();
-    const id = setInterval(() => {
-      pollJobs();
-      setJobs((prev) => {
-        const wasActive = hadActiveJobsRef.current;
-        hadActiveJobsRef.current = prev.length > 0;
-        // Refresh transcripts while jobs are active, plus one extra tick after they clear
-        // so the newly-completed transcript is fetched before hadActive resets to false
-        if (prev.length > 0 || wasActive) loadTranscripts();
-        return prev;
-      });
-    }, 2000);
+    const id = setInterval(pollJobs, 2000);
     return () => clearInterval(id);
   }, [loadTranscripts, pollJobs]);
+
+  const dismissJob = useCallback(async (jobId: string) => {
+    setJobs((prev) => prev.filter((j) => j.id !== jobId));
+    try {
+      await api.jobs.dismiss(jobId);
+    } catch {
+      // Row may already be gone; the panel is updated either way.
+    }
+  }, []);
+
+  const cancelJob = useCallback(async (jobId: string) => {
+    try {
+      await api.jobs.cancel(jobId);
+    } catch {
+      // Most likely it finished a moment ago; the next poll will reflect that.
+    }
+    pollJobs();
+  }, [pollJobs]);
 
   // Tauri drag-drop
   useEffect(() => {
@@ -186,6 +232,93 @@ export default function Dashboard() {
       if (recordTimerRef.current) clearInterval(recordTimerRef.current);
     };
   }, []);
+
+  // Look up the video as soon as a URL is pasted, so the user can confirm they
+  // picked the right one (and catch a bad link) before committing to a job.
+  useEffect(() => {
+    const url = youtubeUrl.trim();
+    if (tab !== "youtube" || !/^https?:\/\//i.test(url)) {
+      setYtPreview(null);
+      return;
+    }
+
+    let cancelled = false;
+    setYtPreviewLoading(true);
+    const timer = setTimeout(() => {
+      api.transcribe
+        .youtubeMetadata(url)
+        .then((meta) => { if (!cancelled) setYtPreview(meta); })
+        .catch(() => { if (!cancelled) setYtPreview(null); })
+        .finally(() => { if (!cancelled) setYtPreviewLoading(false); });
+    }, 600);
+
+    return () => { cancelled = true; clearTimeout(timer); setYtPreviewLoading(false); };
+  }, [youtubeUrl, tab]);
+
+  // ── System audio capture ───────────────────────────────────────────────
+  // Recording happens in the engine (WASAPI loopback), so the UI just drives
+  // start/stop and polls for the elapsed time. Stopping queues the job itself.
+  useEffect(() => {
+    if (tab !== "system") return;
+
+    let cancelled = false;
+    if (loopbackDevices === null) {
+      api.audio
+        .devices()
+        .then((ds) => { if (!cancelled) setLoopbackDevices(ds.filter((d) => d.is_loopback)); })
+        .catch((e) => {
+          if (!cancelled) {
+            setLoopbackDevices([]);
+            setCaptureError(
+              e instanceof Error && e.message.includes("503")
+                ? "System audio capture needs WASAPI, which is only available on Windows."
+                : "Could not list audio devices."
+            );
+          }
+        });
+    }
+
+    const poll = () => api.audio.status()
+      .then((s) => { if (!cancelled) setCaptureStatus(s); })
+      .catch(() => {});
+    poll();
+    const id = setInterval(poll, 1000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [tab, loopbackDevices]);
+
+  async function startSystemCapture() {
+    setCaptureBusy(true);
+    setCaptureError(null);
+    try {
+      const device = loopbackDevices?.[0];
+      await api.audio.startCapture({ loopback: true, device_index: device?.index });
+      setCaptureStatus(await api.audio.status());
+    } catch (e) {
+      setCaptureError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCaptureBusy(false);
+    }
+  }
+
+  async function stopSystemCapture() {
+    setCaptureBusy(true);
+    setCaptureError(null);
+    try {
+      // transcribe:true makes the engine queue the recording immediately, so it
+      // shows up in the Activity panel without a further round trip.
+      await api.audio.stopCapture({
+        transcribe: true,
+        model_name: opts.model,
+        diarize: opts.diarize,
+      });
+      setCaptureStatus(await api.audio.status());
+      pollJobs();
+    } catch (e) {
+      setCaptureError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCaptureBusy(false);
+    }
+  }
 
   function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -283,7 +416,10 @@ export default function Dashboard() {
     { id: "file", label: "File", icon: <FileAudio className="h-3.5 w-3.5" /> },
     { id: "youtube", label: "YouTube", icon: <Youtube className="h-3.5 w-3.5" /> },
     { id: "record", label: "Record", icon: <Mic className="h-3.5 w-3.5" /> },
+    { id: "system", label: "System", icon: <Volume2 className="h-3.5 w-3.5" /> },
   ];
+
+  const capturing = captureStatus?.active ?? false;
 
   return (
     <TooltipProvider>
@@ -346,6 +482,34 @@ export default function Dashboard() {
                   className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
                 />
               </div>
+
+              {ytPreviewLoading && (
+                <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  <span>Looking up video…</span>
+                </div>
+              )}
+
+              {ytPreview && !ytPreviewLoading && (
+                <div className="flex gap-2 rounded-md border border-border p-2">
+                  {ytPreview.thumbnail && (
+                    <img
+                      src={ytPreview.thumbnail}
+                      alt=""
+                      className="h-12 w-20 flex-shrink-0 rounded object-cover"
+                    />
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium leading-snug line-clamp-2">
+                      {ytPreview.title}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground truncate">
+                      {ytPreview.uploader}
+                      {ytPreview.duration > 0 && ` · ${formatDuration(ytPreview.duration)}`}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -382,6 +546,59 @@ export default function Dashboard() {
                     Start Recording
                   </Button>
                 </>
+              )}
+            </div>
+          )}
+
+          {/* System audio tab */}
+          {tab === "system" && (
+            <div className="flex flex-col items-center gap-3 rounded-lg border border-border p-4">
+              {capturing ? (
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
+                    <span className="text-sm font-mono tabular-nums">
+                      {formatDuration(captureStatus?.duration_seconds ?? 0)}
+                    </span>
+                  </div>
+                  {captureStatus?.device_name && (
+                    <p className="text-xs text-muted-foreground text-center break-words">
+                      {captureStatus.device_name}
+                    </p>
+                  )}
+                  <Button
+                    variant="destructive" size="sm" className="w-full"
+                    onClick={stopSystemCapture} disabled={captureBusy}
+                  >
+                    {captureBusy
+                      ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      : <Square className="mr-2 h-3.5 w-3.5 fill-current" />
+                    }
+                    Stop &amp; Transcribe
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Volume2 className="h-8 w-8 text-muted-foreground" />
+                  <p className="text-xs text-muted-foreground text-center">
+                    Records what your computer is playing — calls, videos, anything
+                    on your speakers. Nothing from your microphone.
+                  </p>
+                  <Button
+                    variant="outline" size="sm" className="w-full"
+                    onClick={startSystemCapture}
+                    disabled={captureBusy || loopbackDevices?.length === 0}
+                  >
+                    {captureBusy
+                      ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      : <Volume2 className="mr-2 h-3.5 w-3.5" />
+                    }
+                    Start Recording
+                  </Button>
+                </>
+              )}
+              {captureError && (
+                <p className="text-xs text-destructive text-center">{captureError}</p>
               )}
             </div>
           )}
@@ -444,13 +661,16 @@ export default function Dashboard() {
             </div>
           )}
 
-          <Button onClick={handleTranscribe} disabled={submitting || recording} className="w-full">
-            {submitting ? (
-              <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Queuing…</>
-            ) : (
-              <><Upload className="mr-2 h-4 w-4" />Transcribe</>
-            )}
-          </Button>
+          {/* System capture queues its own job when you stop it. */}
+          {tab !== "system" && (
+            <Button onClick={handleTranscribe} disabled={submitting || recording} className="w-full">
+              {submitting ? (
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Queuing…</>
+              ) : (
+                <><Upload className="mr-2 h-4 w-4" />Transcribe</>
+              )}
+            </Button>
+          )}
         </div>
 
         {/* Right: Transcripts + Jobs */}
@@ -458,19 +678,47 @@ export default function Dashboard() {
           {/* Active jobs */}
           {jobs.length > 0 && (
             <div className="border-b border-border px-4 py-3 space-y-2">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">In Progress</p>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Activity</p>
               <div className="space-y-2">
                 {jobs.map((job) => (
-                  <div key={job.id} className="rounded-md bg-muted p-3 space-y-1.5">
-                    <div className="flex items-center justify-between">
+                  <div
+                    key={job.id}
+                    className={cn(
+                      "rounded-md p-3 space-y-1.5",
+                      job.status === "failed" ? "bg-destructive/10" : "bg-muted"
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-medium truncate">{job.source_name ?? "Untitled"}</span>
-                      <Badge variant={(statusColor[job.status] ?? "secondary") as "default" | "secondary" | "destructive" | "outline" | "success"}>
-                        {job.status}
-                      </Badge>
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <Badge variant={(statusColor[job.status] ?? "secondary") as "default" | "secondary" | "destructive" | "outline" | "success"}>
+                          {job.status}
+                        </Badge>
+                        {(job.status === "processing" || job.status === "queued") && (
+                          <button
+                            onClick={() => cancelJob(job.id)}
+                            title="Cancel this transcription"
+                            className="text-muted-foreground hover:text-destructive transition-colors"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                        {job.status === "failed" && (
+                          <button
+                            onClick={() => dismissJob(job.id)}
+                            title="Dismiss"
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </div>
                     {job.status === "processing" && <Progress value={(job.progress ?? 0) * 100} />}
-                    {job.status === "failed" && job.error_message && (
-                      <p className="text-xs text-destructive">{job.error_message}</p>
+                    {job.status === "failed" && (
+                      <p className="text-xs text-destructive break-words">
+                        {job.error_message ?? "Transcription failed."}
+                      </p>
                     )}
                   </div>
                 ))}

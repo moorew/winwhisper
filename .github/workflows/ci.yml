@@ -1,0 +1,97 @@
+name: CI
+
+# The release workflow only runs on tags, which meant a regression was not
+# caught until someone cut a release. This runs on every push and PR instead.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend — typecheck, tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Typecheck + production build
+        run: npm run build
+
+  engine:
+    name: Engine — API contract tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: engine/requirements-dev.txt
+
+      # requirements-dev.txt deliberately excludes torch/faster-whisper/pyannote
+      # (~2 GB). Every heavy import in the engine is lazy, so the full HTTP
+      # surface is testable without them and this job finishes in seconds.
+      - name: Install test dependencies
+        run: pip install -r engine/requirements-dev.txt
+
+      - name: Run tests
+        working-directory: engine
+        run: pytest -q
+
+  rust:
+    name: Rust — Tauri shell compiles
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      # tauri-build reads frontendDist ("../dist") at compile time, so the
+      # frontend has to be built before the Rust crate will even configure.
+      - name: Build frontend (required by tauri-build)
+        run: |
+          npm ci
+          npm run build
+
+      # tauri-build also validates the bundle resource globs, which point at the
+      # PyInstaller output. Building the real ~800 MB sidecar just to typecheck
+      # Rust would take this job from minutes to nearly an hour, so stand in
+      # empty files: this job answers "does the shell compile?", while the
+      # release workflow builds and verifies the genuine bundle.
+      - name: Stub engine resources so the resource globs resolve
+        shell: pwsh
+        run: |
+          $dir = "engine/dist/winwhisper_engine"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Set-Content -Path "$dir/winwhisper_engine.exe" -Value "stub"
+          Set-Content -Path "$dir/_internal.zip" -Value "stub"
+
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings

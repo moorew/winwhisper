@@ -58,7 +58,10 @@ export interface Speaker {
 export interface TranscriptDetail extends TranscriptSummary {
   job_id: string;
   language_probability: number | null;
+  /** Original media path, from the owning job. */
   source_path: string | null;
+  /** Whether that file still exists — uploads/YouTube temp files are deleted after transcription. */
+  source_available: boolean;
   segments: Segment[];
   speakers: Speaker[];
 }
@@ -82,6 +85,30 @@ export interface DictationStatus {
   loaded_model: string | null;
 }
 
+export interface YouTubeMetadata {
+  title: string;
+  duration: number;
+  uploader: string;
+  thumbnail: string | null;
+}
+
+export interface AudioDevice {
+  index: number;
+  name: string;
+  channels: number;
+  sample_rate: number;
+  is_loopback: boolean;
+  is_default_output: boolean;
+  is_default_input: boolean;
+}
+
+export interface CaptureStatus {
+  active: boolean;
+  loopback: boolean;
+  duration_seconds: number;
+  device_name: string | null;
+}
+
 export interface WatchFolderStatus {
   running: boolean;
   folder_path: string | null;
@@ -99,6 +126,9 @@ export const api = {
     },
     get: (id: string) => request<JobResponse>(`/jobs/${id}`),
     cancel: (id: string) =>
+      request<{ cancelled: boolean; job_id: string }>(`/jobs/${id}/cancel`, { method: "POST" }),
+    /** Removes the job row entirely — used to dismiss a failed job from the UI. */
+    dismiss: (id: string) =>
       fetch(`${BASE_URL}/jobs/${id}`, { method: "DELETE" }),
   },
 
@@ -144,9 +174,7 @@ export const api = {
       }),
 
     youtubeMetadata: (url: string) =>
-      request<{ title: string; duration: number; uploader: string; thumbnail: string | null }>(
-        `/youtube/metadata?url=${encodeURIComponent(url)}`
-      ),
+      request<YouTubeMetadata>(`/youtube/metadata?url=${encodeURIComponent(url)}`),
   },
 
   models: {
@@ -163,15 +191,24 @@ export const api = {
   },
 
   audio: {
-    devices: () => request<unknown[]>("/audio/devices"),
+    devices: () => request<AudioDevice[]>("/audio/devices"),
     startCapture: (body: { loopback?: boolean; device_index?: number }) =>
-      request<unknown>("/audio/capture/start", {
+      request<{ status: string; loopback: boolean; device: string | null }>("/audio/capture/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }),
-    stopCapture: () => request<unknown>("/audio/capture/stop", { method: "POST" }),
-    status: () => request<{ active: boolean; loopback: boolean; duration_seconds: number }>("/audio/capture/status"),
+    // The body is required — FastAPI rejects this endpoint with 422 without one.
+    stopCapture: (body: { transcribe?: boolean; model_name?: string; diarize?: boolean } = {}) =>
+      request<{ status: string; job_id?: string; job_type?: string; file: string | null }>(
+        "/audio/capture/stop",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcribe: true, ...body }),
+        }
+      ),
+    status: () => request<CaptureStatus>("/audio/capture/status"),
   },
 
   dictation: {

@@ -8,10 +8,9 @@ from pydantic import BaseModel
 from core.hardware import get_hardware
 from core.job_worker import worker
 from core.settings import get_setting
+from core.version import APP_VERSION
 
 router = APIRouter(tags=["system"])
-
-APP_VERSION = "0.2.2"
 
 
 class HealthResponse(BaseModel):
