@@ -79,6 +79,19 @@ jobs:
           npm ci
           npm run build
 
+      # tauri-build also validates the bundle resource globs, which point at the
+      # PyInstaller output. Building the real ~800 MB sidecar just to typecheck
+      # Rust would take this job from minutes to nearly an hour, so stand in
+      # empty files: this job answers "does the shell compile?", while the
+      # release workflow builds and verifies the genuine bundle.
+      - name: Stub engine resources so the resource globs resolve
+        shell: pwsh
+        run: |
+          $dir = "engine/dist/winwhisper_engine"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Set-Content -Path "$dir/winwhisper_engine.exe" -Value "stub"
+          Set-Content -Path "$dir/_internal.zip" -Value "stub"
+
       - name: Clippy
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings

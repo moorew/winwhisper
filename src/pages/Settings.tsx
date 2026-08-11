@@ -86,10 +86,18 @@ export default function Settings() {
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [version, setVersion] = useState<string | null>(null);
+  const [hardware, setHardware] = useState<{
+    recommended_device: string;
+    gpu_name: string | null;
+    cpu: string;
+  } | null>(null);
 
   const load = useCallback(async () => {
     // Reported by the engine so this never drifts from the shipped build.
     api.health().then((h) => setVersion(h.version)).catch(() => {});
+    api.status()
+      .then((s) => setHardware(s.hardware as typeof hardware))
+      .catch(() => {});
     try {
       const [ms, ws, ds, allSettings] = await Promise.all([
         api.models.list(),
@@ -421,6 +429,36 @@ export default function Settings() {
                   <Save className="h-4 w-4" />
                 )}
               </Button>
+            </div>
+          </section>
+
+          <Separator />
+
+          {/* Processing hardware */}
+          <section>
+            <h2 className="text-sm font-semibold mb-1">Processing</h2>
+            <p className="text-xs text-muted-foreground mb-3">
+              Where transcription runs. A GPU is used when one is available and
+              working; otherwise WinWhisper falls back to the CPU automatically —
+              slower, but everything still works.
+            </p>
+            <div className="rounded-lg border border-border p-3 space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-sm">Device</span>
+                <span className="text-sm font-medium">
+                  {hardware
+                    ? hardware.recommended_device === "cuda"
+                      ? `GPU — ${hardware.gpu_name ?? "NVIDIA"}`
+                      : "CPU"
+                    : "…"}
+                </span>
+              </div>
+              {hardware?.recommended_device !== "cuda" && hardware && (
+                <p className="text-xs text-muted-foreground">
+                  No usable NVIDIA GPU was detected. Larger models will be slow —
+                  <strong> base</strong> or <strong>small</strong> are good choices on CPU.
+                </p>
+              )}
             </div>
           </section>
 

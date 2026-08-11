@@ -166,6 +166,15 @@ export default function Dashboard() {
     }
   }, []);
 
+  const cancelJob = useCallback(async (jobId: string) => {
+    try {
+      await api.jobs.cancel(jobId);
+    } catch {
+      // Most likely it finished a moment ago; the next poll will reflect that.
+    }
+    pollJobs();
+  }, [pollJobs]);
+
   // Tauri drag-drop
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -632,6 +641,15 @@ export default function Dashboard() {
                         <Badge variant={(statusColor[job.status] ?? "secondary") as "default" | "secondary" | "destructive" | "outline" | "success"}>
                           {job.status}
                         </Badge>
+                        {(job.status === "processing" || job.status === "queued") && (
+                          <button
+                            onClick={() => cancelJob(job.id)}
+                            title="Cancel this transcription"
+                            className="text-muted-foreground hover:text-destructive transition-colors"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                         {job.status === "failed" && (
                           <button
                             onClick={() => dismissJob(job.id)}

@@ -22,6 +22,10 @@ def _is_gpu_runtime_error(exc: BaseException) -> bool:
     return any(marker in message for marker in _GPU_ERROR_MARKERS)
 
 
+class TranscriptionCancelled(Exception):
+    """Raised when a caller asks to abandon an in-flight transcription."""
+
+
 def _get_whisper_model_cls():
     global _WHISPER_MODEL_CLS, _WHISPER_IMPORT_ERROR
     if _WHISPER_MODEL_CLS is not None:
@@ -130,6 +134,7 @@ class Transcriber:
         vad_filter: bool = True,
         word_timestamps: bool = True,
         beam_size: int = 5,
+        should_continue: Optional[Callable[[], bool]] = None,
     ) -> Tuple[list, object]:
         """
         Transcribes audio_path and returns (segments_list, TranscriptionInfo).
@@ -151,6 +156,12 @@ class Transcriber:
 
             segments: list = []
             for seg in segments_gen:
+                # faster-whisper decodes lazily, so this loop is where the time
+                # actually goes — and therefore the only place a long job can be
+                # interrupted. Checked per segment, so cancelling takes effect
+                # within a few seconds rather than at the end of the file.
+                if should_continue is not None and not should_continue():
+                    raise TranscriptionCancelled()
                 segments.append(seg)
                 if on_progress and getattr(info, "duration", 0) and info.duration > 0:
                     on_progress(min(seg.end / info.duration, 0.99))
@@ -159,6 +170,8 @@ class Transcriber:
 
         try:
             return _run()
+        except TranscriptionCancelled:
+            raise
         except Exception as exc:
             # CTranslate2 loads its CUDA libraries lazily, so a broken GPU setup
             # (missing cuBLAS/cuDNN, stale driver) does not surface when the model
