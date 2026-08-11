@@ -197,7 +197,11 @@ jobs:
           if (-not $hasPydantic) {
             throw "_internal.zip does not contain pydantic_core — bundle is incomplete"
           }
-          Write-Host "ZIP sanity check passed (pydantic_core present)."
+          $hasVad = $listing | Where-Object { $_ -match "silero.*\.onnx" }
+          if (-not $hasVad) {
+            throw "_internal.zip does not contain the Silero VAD model — transcription would fail at runtime"
+          }
+          Write-Host "ZIP sanity check passed (pydantic_core + Silero VAD present)."
 
       - name: Diagnose python311.dll dependencies
         shell: pwsh
@@ -248,6 +252,16 @@ jobs:
           $zipMB  = [math]::Round((Get-Item "$src\_internal.zip").Length   / 1MB, 1)
           Write-Host "Engine bundle ready: EXE=$exeMB MB, _internal.zip=$zipMB MB"
 
+          # faster-whisper's Silero VAD model is a data file, not a module, so
+          # nothing in the import graph pulls it in. v0.3.0 shipped without it
+          # and failed every transcription (vad_filter defaults to true).
+          $vad = Get-ChildItem "$src\_internal\faster_whisper\assets" -Filter "*.onnx" -ErrorAction SilentlyContinue
+          if (-not $vad) {
+            throw "No Silero VAD .onnx found under _internal\faster_whisper\assets — " +
+                  "the spec must collect_data_files('faster_whisper'). Transcription would fail at runtime."
+          }
+          Write-Host "VAD model bundled: $($vad.Name) ($([math]::Round($vad.Length/1MB,2)) MB)"
+
       - name: Smoke-test bundled engine
         shell: pwsh
         run: |
@@ -282,6 +296,28 @@ jobs:
             if ($proc.HasExited) { break }
           }
 
+          if ($port -eq $null) {
+            Write-Host "---- engine stdout ----"
+            if (Test-Path $logPath) { Get-Content $logPath | ForEach-Object { Write-Host "[engine] $_" } }
+            Write-Host "---- engine stderr ----"
+            if (Test-Path $errPath) { Get-Content $errPath | ForEach-Object { Write-Host "[engine!] $_" } }
+            if (-not $proc.HasExited) { try { $proc.Kill() } catch {} }
+            throw "Bundled engine did not print WINWHISPER_PORT= within 90s — bundle is broken (see logs above)"
+          }
+          Write-Host "Bundled engine announced port $port — now pushing real audio through it."
+
+          # Booting is not proof of anything. v0.3.0 booted fine and then failed
+          # every transcription because a data file was missing from the bundle.
+          # Download a model and transcribe with vad_filter=true — the exact path
+          # that was broken — against the frozen exe we are about to ship.
+          $smokeFailed = $false
+          try {
+            python engine\tools\smoke_transcribe.py --port $port --model tiny --timeout 900
+            if ($LASTEXITCODE -ne 0) { $smokeFailed = $true }
+          } catch {
+            $smokeFailed = $true
+          }
+
           Write-Host "---- engine stdout ----"
           if (Test-Path $logPath) { Get-Content $logPath | ForEach-Object { Write-Host "[engine] $_" } }
           Write-Host "---- engine stderr ----"
@@ -289,10 +325,10 @@ jobs:
 
           if (-not $proc.HasExited) { try { $proc.Kill() } catch {} }
 
-          if ($port -eq $null) {
-            throw "Bundled engine did not print WINWHISPER_PORT= within 90s — bundle is broken (see logs above)"
+          if ($smokeFailed) {
+            throw "Bundled engine could not complete a transcription — do not ship this build (see logs above)"
           }
-          Write-Host "Bundled engine announced port $port — bundle looks healthy."
+          Write-Host "Bundled engine transcribes end to end."
 
       # ── Node / Frontend ───────────────────────────────────────────────────
       - name: Set up Node.js 20

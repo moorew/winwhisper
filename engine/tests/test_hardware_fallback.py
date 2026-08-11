@@ -85,3 +85,59 @@ def test_ordinary_errors_are_not_treated_as_gpu_failures():
         "model.bin is corrupt",
     ):
         assert not _is_gpu_runtime_error(ValueError(message)), message
+
+
+# ── VAD fallback ─────────────────────────────────────────────────────────────
+#
+# Shipped 0.3.0 could not transcribe at all: the PyInstaller spec never
+# collected faster-whisper's data files, so faster_whisper/assets/
+# silero_vad_v6.onnx was missing from the bundle and every job — vad_filter
+# defaults to True — died with ONNXRuntimeError NO_SUCHFILE.
+
+from core.transcriber import _is_vad_runtime_error, Transcriber  # noqa: E402
+
+
+def test_missing_vad_model_is_recognised():
+    real_error = (
+        "[ONNXRuntimeError] : 3 : NO_SUCHFILE : Load model from "
+        r"C:\Users\me\AppData\Local\WinWhisper\winwhisper_engine\_internal"
+        r"\faster_whisper\assets\silero_vad_v6.onnx failed"
+    )
+    assert _is_vad_runtime_error(RuntimeError(real_error))
+
+
+def test_ordinary_errors_are_not_treated_as_vad_failures():
+    assert not _is_vad_runtime_error(ValueError("audio file is corrupt"))
+    assert not _is_vad_runtime_error(FileNotFoundError("meeting.mp3"))
+
+
+class _VadRefusingModel:
+    """Fails while VAD is on, succeeds without it — the shipped 0.3.0 behaviour."""
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def transcribe(self, _audio, **kwargs):
+        self.calls.append(kwargs["vad_filter"])
+        if kwargs["vad_filter"]:
+            raise RuntimeError(
+                "[ONNXRuntimeError] : 3 : NO_SUCHFILE : Load model from "
+                "silero_vad_v6.onnx failed. File doesn't exist"
+            )
+
+        class _Info:
+            duration = 10.0
+        return iter([]), _Info()
+
+
+def test_transcription_retries_without_vad_when_the_model_is_missing():
+    t = Transcriber()
+    t._model = _VadRefusingModel()
+    t._model_name, t._device = "tiny", "cpu"
+
+    segments, info = t.transcribe_with_progress("audio.wav", vad_filter=True)
+
+    # Tried with VAD, then again without — and the user still got a transcript.
+    assert t._model.calls == [True, False]
+    assert segments == []
+    assert info.duration == 10.0

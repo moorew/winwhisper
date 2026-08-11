@@ -17,10 +17,21 @@ pyannote_datas     = collect_data_files("pyannote.audio")
 asteroid_datas     = collect_data_files("asteroid_filterbanks", include_py_files=True)
 speechbrain_datas  = collect_data_files("speechbrain")
 
+# faster-whisper ships the Silero VAD model as package data
+# (faster_whisper/assets/silero_vad_v6.onnx). Listing faster_whisper as a
+# hidden import pulls in its Python modules but NOT that file, so every
+# transcription with vad_filter=True — the default — died at runtime with
+# "NO_SUCHFILE: Load model ... silero_vad_v6.onnx failed".
+fw_datas           = collect_data_files("faster_whisper")
+# onnxruntime loads the VAD model and keeps its own data alongside the
+# native extension; collect both so the VAD path is fully self-contained.
+onnx_datas         = collect_data_files("onnxruntime")
+onnx_binaries      = collect_dynamic_libs("onnxruntime")
+
 a = Analysis(
     ["main.py"],
     pathex=["."],
-    binaries=ct2_binaries,
+    binaries=[*ct2_binaries, *onnx_binaries],
     datas=[
         ("api",      "api"),
         ("core",     "core"),
@@ -30,6 +41,8 @@ a = Analysis(
         *pyannote_datas,
         *asteroid_datas,
         *speechbrain_datas,
+        *fw_datas,
+        *onnx_datas,
     ],
     hiddenimports=[
         "uvicorn.logging",
@@ -43,6 +56,7 @@ a = Analysis(
         "sqlalchemy.dialects.sqlite", "sqlalchemy.dialects.sqlite.aiosqlite",
         "sqlalchemy.ext.asyncio",
         "faster_whisper", "ctranslate2", "tokenizers",
+        "onnxruntime", "onnxruntime.capi", "onnxruntime.capi._pybind_state",
         "pyannote.audio", "pyannote.core", "pyannote.database", "pyannote.pipeline",
         "asteroid_filterbanks", "speechbrain",
         "torchaudio", "torchaudio.transforms", "torchaudio.functional",

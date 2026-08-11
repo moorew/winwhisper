@@ -1,6 +1,6 @@
 [package]
 name = "winwhisper"
-version = "0.3.0"
+version = "0.3.1"
 description = "WinWhisper — Premium Windows Transcription App"
 authors = []
 edition = "2021"

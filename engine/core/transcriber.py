@@ -22,6 +22,18 @@ def _is_gpu_runtime_error(exc: BaseException) -> bool:
     return any(marker in message for marker in _GPU_ERROR_MARKERS)
 
 
+# Markers for "the VAD model could not be loaded", as opposed to a genuine
+# transcription error. Silero ships as an .onnx data file inside faster-whisper.
+_VAD_ERROR_MARKERS = (
+    "silero", "vad", "onnxruntime", "no_suchfile", "onnx",
+)
+
+
+def _is_vad_runtime_error(exc: BaseException) -> bool:
+    message = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in message for marker in _VAD_ERROR_MARKERS)
+
+
 class TranscriptionCancelled(Exception):
     """Raised when a caller asks to abandon an in-flight transcription."""
 
@@ -144,12 +156,12 @@ class Transcriber:
         if self._model is None:
             raise RuntimeError("No model loaded. Call ensure_loaded() first.")
 
-        def _run() -> Tuple[list, object]:
+        def _run(use_vad: bool) -> Tuple[list, object]:
             segments_gen, info = self._model.transcribe(
                 audio_path,
                 language=language or None,
                 task=task,
-                vad_filter=vad_filter,
+                vad_filter=use_vad,
                 word_timestamps=word_timestamps,
                 beam_size=beam_size,
             )
@@ -169,10 +181,22 @@ class Transcriber:
             return segments, info
 
         try:
-            return _run()
+            return _run(vad_filter)
         except TranscriptionCancelled:
             raise
         except Exception as exc:
+            # The Silero VAD model is a data file inside faster-whisper. If a
+            # packaging gap leaves it out of the bundle, or onnxruntime cannot
+            # load it, that must not cost the user their transcription — voice
+            # activity detection is an optimisation, not a requirement.
+            if vad_filter and _is_vad_runtime_error(exc):
+                print(
+                    f"[WinWhisper] Voice activity detection unavailable ({exc}) — "
+                    "transcribing without it.",
+                    flush=True,
+                )
+                return _run(False)
+
             # CTranslate2 loads its CUDA libraries lazily, so a broken GPU setup
             # (missing cuBLAS/cuDNN, stale driver) does not surface when the model
             # is constructed — it blows up here, part-way through inference. Retry
@@ -187,7 +211,7 @@ class Transcriber:
             if on_progress:
                 on_progress(0.0)
             self._load(self._model_name or "", force_cpu=True)
-            return _run()
+            return _run(vad_filter)
 
     def unload(self) -> None:
         self._model = None
