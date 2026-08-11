@@ -23,7 +23,10 @@ def test_version_is_declared_once_in_python():
             continue
         for line in path.read_text(encoding="utf-8").splitlines():
             if re.match(r"\s*APP_VERSION\s*=\s*[\"']", line):
-                declarations.append(f"{path.relative_to(REPO_ROOT)}: {line.strip()}")
+                # as_posix() so the comparison holds on Windows too.
+                declarations.append(
+                    f"{path.relative_to(REPO_ROOT).as_posix()}: {line.strip()}"
+                )
     assert declarations == [f"engine/core/version.py: APP_VERSION = \"{APP_VERSION}\""], (
         f"APP_VERSION must be declared only in core/version.py, found: {declarations}"
     )
