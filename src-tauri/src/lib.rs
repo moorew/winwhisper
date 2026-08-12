@@ -89,6 +89,19 @@ struct EngineState {
     port: Mutex<Option<u16>>,
 }
 
+/// Files dropped onto the window, queued here until the frontend collects them.
+///
+/// The frontend also subscribes to `tauri://drag-drop`, but that is a core
+/// plugin command governed by the capability ACL — when the app shipped without
+/// a capabilities file every such subscription was denied and drag-and-drop did
+/// nothing at all. Custom commands like `take_dropped_paths` are not subject to
+/// that ACL, so this path keeps working regardless of how permissions are
+/// configured.
+#[derive(Default)]
+struct DropState {
+    paths: Mutex<Vec<String>>,
+}
+
 #[derive(Clone)]
 struct EngineCommand {
     program: OsString,
@@ -100,6 +113,13 @@ struct EngineCommand {
 #[tauri::command]
 fn get_engine_port(state: tauri::State<'_, Arc<EngineState>>) -> Option<u16> {
     *state.port.lock().unwrap()
+}
+
+/// Returns and clears the queue of dropped file paths.
+#[tauri::command]
+fn take_dropped_paths(state: tauri::State<'_, Arc<DropState>>) -> Vec<String> {
+    let mut queued = state.paths.lock().unwrap();
+    std::mem::take(&mut *queued)
 }
 
 #[tauri::command]
@@ -114,6 +134,23 @@ pub fn run() {
         .manage(Arc::new(EngineState {
             port: Mutex::new(None),
         }))
+        .manage(Arc::new(DropState::default()))
+        // Capture drops here as well as emitting the JS event, so drag-and-drop
+        // survives whatever the frontend's event permissions happen to be.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                let collected: Vec<String> = paths
+                    .iter()
+                    .filter_map(|p| p.to_str().map(str::to_string))
+                    .collect();
+                if collected.is_empty() {
+                    return;
+                }
+                log_line(&format!("[WinWhisper] dropped {} file(s)", collected.len()));
+                let state = window.state::<Arc<DropState>>();
+                state.paths.lock().unwrap().extend(collected);
+            }
+        })
         .setup(|app| {
             let handle = app.handle().clone();
             setup_tray(&handle)?;
@@ -122,7 +159,11 @@ pub fn run() {
             spawn_engine(handle);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_engine_port, open_external])
+        .invoke_handler(tauri::generate_handler![
+            get_engine_port,
+            open_external,
+            take_dropped_paths
+        ])
         .run(tauri::generate_context!())
         .expect("error while running WinWhisper");
 }

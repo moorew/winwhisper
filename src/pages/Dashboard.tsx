@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Upload,
   Youtube,
@@ -204,12 +205,13 @@ export default function Dashboard() {
           else unlisteners.push(fn);
         })
         .catch((err) => {
+          // Not fatal: the Rust-side queue below still delivers dropped files.
+          // Worth logging loudly though — a denial here means the capability
+          // config is wrong, which breaks every other Tauri event too.
           console.error(
-            `[WinWhisper] could not subscribe to ${event} — drag and drop will not work.`,
+            `[WinWhisper] could not subscribe to ${event}; ` +
+              "falling back to the polled drop queue.",
             err
-          );
-          setSubmitError(
-            "Drag and drop is unavailable in this build — use Browse to pick a file."
           );
         });
     };
@@ -231,6 +233,27 @@ export default function Dashboard() {
       disposed = true;
       unlisteners.forEach((fn) => fn());
     };
+  }, []);
+
+  // Belt and braces: the Rust side also queues dropped paths, and draining that
+  // queue is a plain command rather than a permission-gated event. If the
+  // listener above is denied, this still delivers the file.
+  useEffect(() => {
+    let stopped = false;
+    const id = setInterval(async () => {
+      try {
+        const paths = await invoke<string[]>("take_dropped_paths");
+        if (stopped || !paths?.length) return;
+        setTab("file");
+        setDroppedPath(paths[0]);
+        setDroppedFile(null);
+        setIsDragging(false);
+        setSubmitError(null);
+      } catch {
+        // Not running under Tauri (browser dev) — nothing to collect.
+      }
+    }, 700);
+    return () => { stopped = true; clearInterval(id); };
   }, []);
 
   // Mic recording
