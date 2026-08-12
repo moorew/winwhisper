@@ -11,6 +11,9 @@ Deliberately flat: no gradient, bevel, inner highlight or drop shadow.
 """
 from __future__ import annotations
 
+import io
+import struct
+
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -70,6 +73,52 @@ def tray_icon(px: int, supersample: int = 8) -> Image.Image:
     return img.resize((px, px), Image.LANCZOS)
 
 
+def write_ico(path: Path, render, sizes: list[int]) -> None:
+    """
+    Writes a Windows .ico by hand.
+
+    Pillow's ICO writer PNG-compresses every entry. Windows only reads PNG
+    entries reliably at 256x256 — at taskbar and desktop sizes it wants a BMP
+    (DIB) with the AND mask, and quietly falls back to a stale or generic icon
+    when it does not get one. So: BMP below 256, PNG at 256.
+    """
+    entries: list[tuple[int, bytes]] = []
+    for size in sorted(sizes):
+        img = render(size).convert("RGBA")
+        if size >= 256:
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            entries.append((size, buf.getvalue()))
+            continue
+
+        # BITMAPINFOHEADER: height is doubled to cover the (empty) AND mask.
+        header = struct.pack(
+            "<IiiHHIIiiII", 40, size, size * 2, 1, 32, 0, size * size * 4, 0, 0, 0, 0
+        )
+        pixels = bytearray()
+        for y in range(size - 1, -1, -1):          # bottom-up rows
+            for x in range(size):
+                r, g, b, a = img.getpixel((x, y))
+                pixels += bytes((b, g, r, a))      # BGRA
+        # 32-bit icons still carry an AND mask; alpha does the real work.
+        mask_row = ((size + 31) // 32) * 4
+        entries.append((size, header + bytes(pixels) + bytes(mask_row * size)))
+
+    out = bytearray(struct.pack("<HHH", 0, 1, len(entries)))
+    offset = 6 + 16 * len(entries)
+    for size, blob in entries:
+        out += struct.pack(
+            "<BBBBHHII",
+            0 if size >= 256 else size,
+            0 if size >= 256 else size,
+            0, 0, 1, 32, len(blob), offset,
+        )
+        offset += len(blob)
+    for _, blob in entries:
+        out += blob
+    path.write_bytes(bytes(out))
+
+
 def main() -> None:
     outputs = {
         "32x32.png": app_icon(32),
@@ -82,19 +131,12 @@ def main() -> None:
         print(f"wrote {name} ({img.width}x{img.height})")
 
     # .ico carries every size Windows asks for, from the taskbar to Explorer.
-    ico_sizes = [16, 24, 32, 48, 64, 256]
-    app_icon(256).save(
-        HERE / "icon.ico",
-        format="ICO",
-        sizes=[(s, s) for s in ico_sizes],
-    )
-    print(f"wrote icon.ico ({', '.join(f'{s}x{s}' for s in ico_sizes)})")
+    write_ico(HERE / "icon.ico", app_icon, [16, 24, 32, 48, 64, 128, 256])
+    print("wrote icon.ico (16, 24, 32, 48, 64, 128, 256)")
 
     # The tray gets its own asset rather than reusing the coloured app tile.
     tray_icon(32).save(HERE / "tray.png")
-    tray_icon(32).save(
-        HERE / "tray.ico", format="ICO", sizes=[(16, 16), (24, 24), (32, 32)]
-    )
+    write_ico(HERE / "tray.ico", tray_icon, [16, 20, 24, 32])
     print("wrote tray.png, tray.ico")
 
 

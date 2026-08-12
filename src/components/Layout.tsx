@@ -2,7 +2,7 @@ import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { House, Cpu, Settings, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useEngineHealth } from "@/hooks/useEngine";
+import { useEngineState, type EngineState } from "@/hooks/useEngine";
 import { Mark } from "@/components/Mark";
 
 const NAV = [
@@ -31,14 +31,12 @@ async function windowAction(action: "minimize" | "toggleMaximize" | "close") {
 
 export default function Layout({
   children,
-  engineReady,
   readerTitle,
 }: {
   children: ReactNode;
-  engineReady: boolean;
   readerTitle?: string | null;
 }) {
-  const { healthy } = useEngineHealth(engineReady);
+  const engineState = useEngineState();
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -70,7 +68,7 @@ export default function Layout({
       {/* The rail overlays the pane while expanded, so page content never
           reflows on hover — hence the fixed left offset rather than a flex gap. */}
       <div className="relative flex min-h-0 flex-1">
-        <Rail engineReady={engineReady} healthy={healthy} />
+        <Rail engineState={engineState} />
         <main
           className="min-w-0 flex-1 overflow-hidden border-l border-t border-pane-edge bg-pane rounded-tl-pane"
           style={{ marginLeft: RAIL_COLLAPSED }}
@@ -162,13 +160,7 @@ function ControlCell({
   );
 }
 
-function Rail({
-  engineReady,
-  healthy,
-}: {
-  engineReady: boolean;
-  healthy: boolean;
-}) {
+function Rail({ engineState }: { engineState: EngineState }) {
   const [expanded, setExpanded] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const location = useLocation();
@@ -183,12 +175,15 @@ function Rail({
 
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
-  // The dot carries a 3px halo of its own colour at 15%.
-  const status = !engineReady
-    ? { label: "Engine starting…", dot: "bg-warning ring-warning/15", pulse: true }
-    : healthy
-    ? { label: "Engine ready", dot: "bg-accent-ink ring-accent-ink/15", pulse: false }
-    : { label: "Engine offline", dot: "bg-danger ring-danger/15", pulse: true };
+  // The dot carries a 3px halo of its own colour at 15%. "Starting" covers the
+  // cold start, which is tens of seconds — only a engine that has answered and
+  // then stopped is reported as offline.
+  const status =
+    engineState === "starting"
+      ? { label: "Engine starting…", dot: "bg-warning ring-warning/15", pulse: true }
+      : engineState === "ready"
+      ? { label: "Engine ready", dot: "bg-accent-ink ring-accent-ink/15", pulse: false }
+      : { label: "Engine offline", dot: "bg-danger ring-danger/15", pulse: true };
 
   return (
     <nav

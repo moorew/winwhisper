@@ -203,12 +203,14 @@ export function PrimaryButton({
   onClick,
   disabled,
   className,
+  title,
   type = "button",
 }: {
   children: ReactNode;
   onClick?: () => void;
   disabled?: boolean;
   className?: string;
+  title?: string;
   type?: "button" | "submit";
 }) {
   return (
@@ -216,6 +218,7 @@ export function PrimaryButton({
       type={type}
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className={cn(
         "flex h-9 items-center gap-2 rounded-control bg-accent-fill px-[18px] text-body font-semibold text-white transition-opacity duration-[120ms]",
         disabled ? "pointer-events-none opacity-40" : "hover:brightness-110",

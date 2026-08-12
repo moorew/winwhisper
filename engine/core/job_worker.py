@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -286,7 +287,19 @@ class JobWorker:
                 if is_cancel_requested(job_id):
                     await _update_job(job_id, "cancelled", progress=0.0)
                 else:
-                    await _update_job(job_id, "failed", error=str(exc))
+                    # The message alone is often useless — "[Errno 22] Invalid
+                    # argument" says nothing about which call failed. Put the
+                    # traceback in engine.log and name the exception type in the
+                    # message the user sees.
+                    print(
+                        f"[WinWhisper] job {job_id[:8]} failed:\n"
+                        + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+                        flush=True,
+                    )
+                    detail = str(exc).strip() or exc.__class__.__name__
+                    await _update_job(
+                        job_id, "failed", error=f"{exc.__class__.__name__}: {detail}"
+                    )
             finally:
                 self._current_job_id = None
                 _live_progress.pop(job_id, None)

@@ -11,6 +11,24 @@ except ImportError:
     _YT_DLP_AVAILABLE = False
 
 
+class _YtdlLogger:
+    """Forwards yt-dlp's messages into the engine log rather than the console."""
+
+    def debug(self, msg: str) -> None:
+        # yt-dlp routes info-level lines here prefixed with "[debug] ".
+        if msg and not msg.startswith("[debug] "):
+            print(f"[WinWhisper] yt-dlp: {msg}", flush=True)
+
+    def info(self, msg: str) -> None:
+        print(f"[WinWhisper] yt-dlp: {msg}", flush=True)
+
+    def warning(self, msg: str) -> None:
+        print(f"[WinWhisper] yt-dlp warning: {msg}", flush=True)
+
+    def error(self, msg: str) -> None:
+        print(f"[WinWhisper] yt-dlp error: {msg}", flush=True)
+
+
 def _check_available() -> None:
     if not _YT_DLP_AVAILABLE:
         raise RuntimeError("yt-dlp is not installed. Run: pip install yt-dlp")
@@ -34,6 +52,9 @@ class YouTubeExtractor:
             "no_warnings": True,
             "skip_download": True,
             "extract_flat": False,
+            "no_color": True,
+            "socket_timeout": 20,
+            "logger": _YtdlLogger(),
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -93,6 +114,19 @@ class YouTubeExtractor:
             # We report progress through the hook; yt-dlp's own progress bar
             # would otherwise spam the stdout the Tauri shell reads and logs.
             "noprogress": True,
+            "no_color": True,
+            # Stamping the file with the video's Last-Modified date calls
+            # os.utime(), which raises OSError [Errno 22] on Windows whenever
+            # that timestamp falls outside the range NTFS accepts. The mtime is
+            # worth nothing to us and the failure looked like an instant,
+            # unexplained YouTube error.
+            "updatetime": False,
+            # Belt and braces on a platform that rejects : ? * " < > | in names.
+            "windowsfilenames": True,
+            # Route yt-dlp's own output through our logger rather than letting
+            # it write to stdout/stderr directly — the shell reads stdout to
+            # discover the engine port, and a bundled app has no real console.
+            "logger": _YtdlLogger(),
         }
 
         print(f"[WinWhisper] YouTube: downloading audio for {url}", flush=True)

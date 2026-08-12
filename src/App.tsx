@@ -6,6 +6,7 @@ import { api, setEnginePort } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { ReaderTitleProvider } from "@/lib/reader-title";
 import { useCaptureWindows, useToastNavigation } from "@/hooks/useCaptureWindows";
+import { EngineStateProvider, useEngineHealth } from "@/hooks/useEngine";
 import Onboarding from "@/components/Onboarding";
 import Dashboard from "@/pages/Dashboard";
 import Editor from "@/pages/Editor";
@@ -21,6 +22,9 @@ export default function App() {
   // main window is the only place already polling the engine.
   useCaptureWindows(engineReady);
   useToastNavigation(navigate);
+
+  // One poller for the whole app; the rail and dashboard both read this.
+  const { state: engineState } = useEngineHealth(engineReady);
 
   useEffect(() => {
     let stopped = false;
@@ -75,17 +79,19 @@ export default function App() {
 
   return (
     <ReaderTitleProvider value={setReaderTitle}>
-      <div className="h-full text-foreground">
-        <Layout engineReady={engineReady} readerTitle={readerTitle}>
+      <EngineStateProvider value={engineState}>
+        <div className="h-full text-foreground">
+          <Layout readerTitle={readerTitle}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/editor/:id" element={<Editor />} />
             <Route path="/models" element={<Models />} />
             <Route path="/settings" element={<Settings />} />
           </Routes>
-        </Layout>
-        {engineReady && <Onboarding />}
-      </div>
+          </Layout>
+          {engineState === "ready" && <Onboarding />}
+        </div>
+      </EngineStateProvider>
     </ReaderTitleProvider>
   );
 }

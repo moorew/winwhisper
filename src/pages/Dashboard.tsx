@@ -49,6 +49,7 @@ import {
   safeFilename,
 } from "@/lib/utils";
 import { closeCaptureWindow, openCaptureWindow } from "@/hooks/useCaptureWindows";
+import { useEngineState } from "@/hooks/useEngine";
 
 type Source = "file" | "youtube" | "record" | "system";
 
@@ -119,6 +120,8 @@ export default function Dashboard() {
   const [loadingTranscripts, setLoadingTranscripts] = useState(true);
   const activeCountRef = useRef(0);
   const [now, setNow] = useState(() => Date.now());
+  // A cold start takes tens of seconds; say so rather than failing quietly.
+  const engineState = useEngineState();
 
   // ── Data ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -341,7 +344,12 @@ export default function Dashboard() {
   // ── Submit ──────────────────────────────────────────────────────────────
   const hasSource =
     source === "youtube" ? youtubeUrl.trim().length > 0 : Boolean(droppedPath || droppedFile);
-  const canSubmit = hasSource && availableModels.length > 0 && !submitting && !recording;
+  const canSubmit =
+    hasSource &&
+    availableModels.length > 0 &&
+    engineState === "ready" &&
+    !submitting &&
+    !recording;
 
   async function handleTranscribe() {
     setSubmitError(null);
@@ -434,13 +442,25 @@ export default function Dashboard() {
         title="Transcribe"
         subtitle="Everything runs on this machine"
         right={
-          <Pill>
-            <Zap size={14} strokeWidth={1.75} className="text-accent-ink" />
-            <span className="tnum">
-              {model}
-              {device ? ` · ${device}` : ""}
-            </span>
-          </Pill>
+          engineState === "ready" ? (
+            <Pill>
+              <Zap size={14} strokeWidth={1.75} className="text-accent-ink" />
+              <span className="tnum">
+                {model}
+                {device ? ` · ${device}` : ""}
+              </span>
+            </Pill>
+          ) : engineState === "starting" ? (
+            <Pill className="border-warning/30">
+              <Loader size={14} strokeWidth={1.75} className="animate-spin text-warning" />
+              <span>Starting the engine…</span>
+            </Pill>
+          ) : (
+            <Pill className="border-danger/30">
+              <AlertCircle size={14} strokeWidth={1.75} className="text-danger" />
+              <span>Engine offline</span>
+            </Pill>
+          )
         }
       />
 
@@ -533,6 +553,7 @@ export default function Dashboard() {
             <PrimaryButton
               onClick={handleTranscribe}
               disabled={!canSubmit}
+              title={engineState !== "ready" ? "Engine offline" : undefined}
               className={cn(source === "system" && "hidden")}
             >
               {submitting ? (
@@ -550,10 +571,17 @@ export default function Dashboard() {
               <span>{submitError}</span>
             </div>
           )}
-          {availableModels.length === 0 && (
+          {engineState === "starting" ? (
             <p className="text-meta text-text-dim">
-              No model on disk yet — download one from the Models page to start transcribing.
+              The transcription engine is still loading — this takes up to a minute
+              on the first launch after an update.
             </p>
+          ) : (
+            availableModels.length === 0 && (
+              <p className="text-meta text-text-dim">
+                No model on disk yet — download one from the Models page to start transcribing.
+              </p>
+            )
           )}
         </Card>
 
