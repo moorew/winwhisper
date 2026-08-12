@@ -66,6 +66,8 @@ export interface TranscriptDetail extends TranscriptSummary {
   source_path: string | null;
   /** Whether that file still exists — uploads/YouTube temp files are deleted after transcription. */
   source_available: boolean;
+  /** Size of the source file, for the reader's Source panel. */
+  source_size_bytes: number | null;
   segments: Segment[];
   speakers: Speaker[];
 }
@@ -90,6 +92,8 @@ export interface DictationStatus {
   hotkey: string | null;
   model_loaded: boolean;
   loaded_model: string | null;
+  /** True while the hotkey is held — drives the floating dictation HUD. */
+  is_recording: boolean;
 }
 
 export interface YouTubeMetadata {
@@ -114,6 +118,8 @@ export interface CaptureStatus {
   loopback: boolean;
   duration_seconds: number;
   device_name: string | null;
+  /** RMS of the latest chunk, 0..1 — drives the recorder's level meter. */
+  level: number;
 }
 
 export interface WatchFolderStatus {
@@ -125,6 +131,14 @@ export interface WatchFolderStatus {
 export const api = {
   health: () => request<{ status: string; version: string }>("/health"),
   status: () => request<Record<string, unknown>>("/status"),
+  storage: () =>
+    request<{
+      models_bytes: number;
+      transcripts_bytes: number;
+      cache_bytes: number;
+      total_bytes: number;
+      models_dir: string;
+    }>("/storage"),
 
   jobs: {
     list: (params?: { status?: string; limit?: number }) => {

@@ -21,7 +21,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { api, Segment, Speaker, TranscriptDetail } from "@/lib/api";
 import { SecondaryButton } from "@/components/ui/primitives";
 import { useSetReaderTitle } from "@/lib/reader-title";
-import { cn, formatDuration, safeFilename } from "@/lib/utils";
+import { cn, formatDuration, formatFileSize, safeFilename } from "@/lib/utils";
 
 /** Moved off green so a speaker never reads as the brand colour. */
 const SPEAKER_COLORS = [
@@ -449,7 +449,19 @@ export default function Editor() {
 
           <SidebarSection label="Source">
             {transcript.source_available ? (
-              <p className="break-all text-meta text-text-muted">{transcript.source_path}</p>
+              <>
+                <p className="break-all text-meta text-text-muted">{transcript.source_path}</p>
+                <p className="tnum text-meta text-text-dim">
+                  {[
+                    transcript.duration != null ? formatDuration(transcript.duration) : null,
+                    transcript.source_size_bytes != null
+                      ? formatFileSize(transcript.source_size_bytes)
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
+              </>
             ) : (
               <p className="text-meta text-text-dim">Original file no longer on disk</p>
             )}

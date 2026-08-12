@@ -48,6 +48,7 @@ import {
   parseEngineDate,
   safeFilename,
 } from "@/lib/utils";
+import { closeCaptureWindow, openCaptureWindow } from "@/hooks/useCaptureWindows";
 
 type Source = "file" | "youtube" | "record" | "system";
 
@@ -312,6 +313,9 @@ export default function Dashboard() {
     try {
       await api.audio.startCapture({ loopback: true, device_index: loopbackDevices?.[0]?.index });
       setCaptureStatus(await api.audio.status());
+      // The floating recorder takes over from here, so it stays visible while
+      // the user switches to whatever they are capturing.
+      await openCaptureWindow("recorder", `&model=${encodeURIComponent(model)}`);
     } catch (e) {
       setCaptureError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -324,6 +328,7 @@ export default function Dashboard() {
     setCaptureError(null);
     try {
       await api.audio.stopCapture({ transcribe: true, model_name: model, diarize });
+      await closeCaptureWindow("recorder");
       setCaptureStatus(await api.audio.status());
       pollJobs();
     } catch (e) {

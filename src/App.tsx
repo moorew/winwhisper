@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { api, setEnginePort } from "@/lib/api";
 import Layout from "@/components/Layout";
 import { ReaderTitleProvider } from "@/lib/reader-title";
+import { useCaptureWindows, useToastNavigation } from "@/hooks/useCaptureWindows";
 import Onboarding from "@/components/Onboarding";
 import Dashboard from "@/pages/Dashboard";
 import Editor from "@/pages/Editor";
@@ -14,6 +15,12 @@ import Settings from "@/pages/Settings";
 export default function App() {
   const [engineReady, setEngineReady] = useState(false);
   const [readerTitle, setReaderTitle] = useState<string | null>(null);
+  const navigate = useNavigate();
+
+  // Floating dictation HUD and completion toast are driven from here — the
+  // main window is the only place already polling the engine.
+  useCaptureWindows(engineReady);
+  useToastNavigation(navigate);
 
   useEffect(() => {
     let stopped = false;

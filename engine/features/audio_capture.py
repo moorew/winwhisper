@@ -33,6 +33,28 @@ else:
 _PA_AVAILABLE = _pa_mod is not None
 
 
+def _chunk_level(data: bytes) -> float:
+    """
+    RMS of a 16-bit PCM chunk, normalised to 0..1 and lightly compressed so
+    ordinary speech fills a useful part of the meter rather than hugging zero.
+    """
+    if not data:
+        return 0.0
+    try:
+        import numpy as np
+
+        samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+        if samples.size == 0:
+            return 0.0
+        rms = float(np.sqrt(np.mean(np.square(samples)))) / 32768.0
+    except Exception:
+        # numpy is a declared dependency, but never let the meter break capture.
+        return 0.0
+    # sqrt curve: speech peaks around 0.1-0.2 RMS, which would otherwise be a
+    # barely-visible meter.
+    return max(0.0, min(1.0, rms ** 0.5))
+
+
 def _require_pa() -> None:
     if not _PA_AVAILABLE:
         raise RuntimeError(
@@ -118,6 +140,9 @@ class AudioCapture:
         self._device_name: Optional[str] = None
         self._start_time: Optional[float] = None
         self._record_error: Optional[str] = None
+        # Rolling RMS of the most recent chunk, 0..1 — drives the floating
+        # recorder's level meter so it shows real audio rather than an animation.
+        self._level = 0.0
 
     # ── Properties ────────────────────────────────────────────────────────
 
@@ -132,6 +157,11 @@ class AudioCapture:
     @property
     def device_name(self) -> Optional[str]:
         return self._device_name
+
+    @property
+    def level(self) -> float:
+        """Loudness of the last chunk, 0..1. Zero when not recording."""
+        return self._level if self._active else 0.0
 
     @property
     def duration_seconds(self) -> float:
@@ -212,9 +242,11 @@ class AudioCapture:
                 try:
                     data = stream.read(1024, exception_on_overflow=False)
                     frames.append(data)
+                    self._level = _chunk_level(data)
                 except Exception:
                     break
 
+            self._level = 0.0
             stream.stop_stream()
             stream.close()
 

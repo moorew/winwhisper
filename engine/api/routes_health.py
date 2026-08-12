@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from typing import Optional
 
 from fastapi import APIRouter
@@ -29,6 +31,14 @@ class HardwareDetail(BaseModel):
     recommended_compute_type: str
 
 
+class StorageResponse(BaseModel):
+    models_bytes: int
+    transcripts_bytes: int
+    cache_bytes: int
+    total_bytes: int
+    models_dir: str
+
+
 class StatusResponse(BaseModel):
     status: str
     version: str
@@ -42,6 +52,48 @@ class StatusResponse(BaseModel):
 @router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse(status="ok", version=APP_VERSION)
+
+
+def _dir_size(path) -> int:
+    """Total bytes under a directory, ignoring anything unreadable."""
+    total = 0
+    if not path.exists():
+        return 0
+    for entry in path.rglob("*"):
+        try:
+            if entry.is_file():
+                total += entry.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+@router.get("/storage", response_model=StorageResponse)
+async def storage_usage() -> StorageResponse:
+    """
+    Disk used under %APPDATA%\\WinWhisper, broken down for the Settings
+    storage bar. Walking the model directory is the only slow part and it is
+    a handful of large files, so this stays fast enough to call on page load.
+    """
+    from core.storage import storage as app_storage
+
+    models = await asyncio.to_thread(_dir_size, app_storage.models_dir)
+    transcripts = await asyncio.to_thread(_dir_size, app_storage.transcripts_dir)
+    cache = await asyncio.to_thread(_dir_size, app_storage.temp_dir)
+    try:
+        db = app_storage.db_path.stat().st_size
+    except OSError:
+        db = 0
+
+    return StorageResponse(
+        models_bytes=models,
+        # The database holds the transcript text itself, so it belongs here
+        # rather than in the cache figure.
+        transcripts_bytes=transcripts + db,
+        cache_bytes=cache,
+        total_bytes=models + transcripts + db + cache,
+        models_dir=str(app_storage.models_dir),
+    )
 
 
 @router.get("/status", response_model=StatusResponse)

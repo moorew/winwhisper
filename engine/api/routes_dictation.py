@@ -21,6 +21,9 @@ class DictationStatusResponse(BaseModel):
     hotkey: Optional[str]
     model_loaded: bool
     loaded_model: Optional[str]
+    # True while the hotkey is held down — the floating dictation HUD is shown
+    # for exactly as long as this is true.
+    is_recording: bool = False
 
 
 @router.get("/status", response_model=DictationStatusResponse)
@@ -31,6 +34,7 @@ async def dictation_status() -> DictationStatusResponse:
         hotkey=hotkey,
         model_loaded=transcriber.is_loaded,
         loaded_model=transcriber.loaded_model,
+        is_recording=dictation_engine.is_recording,
     )
 
 

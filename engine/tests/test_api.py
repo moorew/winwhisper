@@ -16,7 +16,7 @@ import pytest
 JOB_FIELDS = {
     "id", "status", "job_type", "source_name", "model_name",
     "progress", "error_message", "created_at", "updated_at", "transcript_id",
-    "stage",
+    "stage", "partial_text",
 }
 MODEL_FIELDS = {
     "name", "repo_id", "size_mb", "speed", "description",
@@ -25,7 +25,7 @@ MODEL_FIELDS = {
 TRANSCRIPT_DETAIL_FIELDS = {
     "id", "job_id", "title", "language", "language_probability", "duration",
     "word_count", "source_type", "created_at", "source_path",
-    "source_available", "segments", "speakers",
+    "source_available", "source_size_bytes", "segments", "speakers",
 }
 
 
@@ -193,14 +193,14 @@ def test_watch_folder_rejects_a_missing_directory(client):
 
 def test_dictation_status_shape(client):
     body = client.get("/dictation/status").json()
-    assert {"active", "hotkey", "model_loaded", "loaded_model"} <= set(body)
+    assert {"active", "hotkey", "model_loaded", "loaded_model", "is_recording"} <= set(body)
 
 
 # ── System audio capture ─────────────────────────────────────────────────────
 
 def test_capture_status_shape(client):
     body = client.get("/audio/capture/status").json()
-    assert {"active", "loopback", "duration_seconds", "device_name"} <= set(body)
+    assert {"active", "loopback", "duration_seconds", "device_name", "level"} <= set(body)
     assert body["active"] is False
 
 
@@ -276,3 +276,59 @@ def test_transcript_summary_list_includes_new_rows(client):
     assert r.status_code == 200
     titles = {t["title"] for t in r.json()}
     assert {"present.wav", "absent.wav"} <= titles
+
+
+# ── Storage + floating capture window support ────────────────────────────────
+
+def test_storage_breakdown(client):
+    """Backs the Settings storage bar, which stacks the three figures."""
+    r = client.get("/storage")
+    assert r.status_code == 200
+    body = r.json()
+    assert {"models_bytes", "transcripts_bytes", "cache_bytes", "total_bytes", "models_dir"} <= set(body)
+    assert body["total_bytes"] == (
+        body["models_bytes"] + body["transcripts_bytes"] + body["cache_bytes"]
+    )
+    assert all(body[k] >= 0 for k in ("models_bytes", "transcripts_bytes", "cache_bytes"))
+    assert body["models_dir"]
+
+
+def test_capture_status_reports_a_level(client):
+    """The floating recorder's meter is driven by this."""
+    body = client.get("/audio/capture/status").json()
+    assert "level" in body
+    assert 0.0 <= body["level"] <= 1.0
+    # Nothing is being captured, so there is nothing to show.
+    assert body["level"] == 0.0
+
+
+def test_dictation_status_reports_whether_it_is_recording(client):
+    """The dictation HUD is shown for exactly as long as this is true."""
+    body = client.get("/dictation/status").json()
+    assert "is_recording" in body
+    assert body["is_recording"] is False
+
+
+@pytest.mark.asyncio
+async def test_transcript_detail_reports_source_size(client, tmp_path):
+    """The reader's Source panel shows the file size beside the path."""
+    from core.database import Job, Transcript, async_session_factory
+
+    media = tmp_path / "sized.wav"
+    media.write_bytes(b"0" * 4096)
+    job_id, transcript_id = str(uuid.uuid4()), str(uuid.uuid4())
+
+    async with async_session_factory() as session:
+        session.add(Job(
+            id=job_id, status="done", job_type="file", source_path=str(media),
+            source_name="sized.wav", model_name="tiny", options={},
+        ))
+        session.add(Transcript(
+            id=transcript_id, job_id=job_id, title="sized.wav",
+            word_count=0, source_type="file",
+        ))
+        await session.commit()
+
+    body = client.get(f"/transcripts/{transcript_id}").json()
+    assert body["source_available"] is True
+    assert body["source_size_bytes"] == 4096

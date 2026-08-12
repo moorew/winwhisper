@@ -96,6 +96,8 @@ class TranscriptResponse(BaseModel):
     # in temp/ and are deleted once transcription finishes, so a non-null
     # source_path is not on its own enough to play audio back.
     source_available: bool
+    # Size of that file, so the reader can show "34.2 MB" beside the path.
+    source_size_bytes: Optional[int]
     segments: List[SegmentResponse]
     speakers: List[SpeakerResponse]
 
@@ -294,6 +296,7 @@ async def get_transcript(
     # liveness check) so the editor knows whether it can offer playback.
     source_path = transcript.job.source_path if transcript.job else None
     source_available = bool(source_path and Path(source_path).is_file())
+    source_size_bytes = Path(source_path).stat().st_size if source_available else None
 
     return TranscriptResponse(
         id=transcript.id,
@@ -307,6 +310,7 @@ async def get_transcript(
         created_at=transcript.created_at,
         source_path=source_path,
         source_available=source_available,
+        source_size_bytes=source_size_bytes,
         segments=[SegmentResponse.model_validate(s) for s in transcript.segments],
         speakers=[SpeakerResponse.model_validate(s) for s in transcript.speakers],
     )

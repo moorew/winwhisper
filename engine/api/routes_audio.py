@@ -44,6 +44,8 @@ class CaptureStatusResponse(BaseModel):
     loopback: bool
     duration_seconds: float
     device_name: Optional[str]
+    # Loudness of the most recent chunk, 0..1 — drives the recorder's meter.
+    level: float = 0.0
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -151,4 +153,5 @@ async def capture_status() -> CaptureStatusResponse:
         loopback=capture.is_loopback,
         duration_seconds=round(capture.duration_seconds, 1),
         device_name=capture.device_name,
+        level=round(capture.level, 3),
     )

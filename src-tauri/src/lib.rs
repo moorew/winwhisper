@@ -122,6 +122,74 @@ fn take_dropped_paths(state: tauri::State<'_, Arc<DropState>>) -> Vec<String> {
     std::mem::take(&mut *queued)
 }
 
+// ── Floating capture windows ────────────────────────────────────────────────
+//
+// The recorder, dictation HUD and completion toast are separate always-on-top
+// windows. They load the same bundle with `?window=<kind>`, which main.tsx
+// branches on — a query parameter rather than a route, because the asset
+// protocol serves files and would 404 on a client-side path.
+
+/// Size and shape of each floating window, per the design.
+fn capture_window_spec(kind: &str) -> Option<(f64, f64)> {
+    // Heights are content-driven: these windows have no chrome, so any excess
+    // shows as dead space inside the rounded card.
+    match kind {
+        "recorder" => Some((400.0, 152.0)),
+        "dictation" => Some((300.0, 72.0)),
+        "toast" => Some((300.0, 76.0)),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+async fn open_capture_window(
+    app: AppHandle,
+    kind: String,
+    query: Option<String>,
+) -> Result<(), String> {
+    let (width, height) = capture_window_spec(&kind)
+        .ok_or_else(|| format!("unknown capture window: {kind}"))?;
+    let label = format!("capture-{kind}");
+
+    // Already open: just refocus it rather than stacking duplicates.
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    let url = format!("index.html?window={kind}{}", query.unwrap_or_default());
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+        .inner_size(width, height)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .build()
+        .map_err(|e| format!("could not open {kind} window: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+fn close_capture_window(app: AppHandle, kind: String) {
+    if let Some(window) = app.get_webview_window(&format!("capture-{kind}")) {
+        let _ = window.close();
+    }
+}
+
+/// Brings the main window forward — the completion toast's "Open" action.
+#[tauri::command]
+fn focus_main_window(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 #[tauri::command]
 fn open_external(url: String) {
     let _ = std::process::Command::new("cmd")
@@ -163,7 +231,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_engine_port,
             open_external,
-            take_dropped_paths
+            take_dropped_paths,
+            open_capture_window,
+            close_capture_window,
+            focus_main_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running WinWhisper");
@@ -859,6 +930,8 @@ fn apply_window_material(handle: &AppHandle) {
     #[cfg(target_os = "windows")]
     {
         if let Some(window) = handle.get_webview_window("main") {
+            // Rounded corners on the undecorated window come from the CSS radius;
+            // mica supplies the material behind the titlebar and rail.
             match window_vibrancy::apply_mica(&window, None) {
                 Ok(()) => log_line("[WinWhisper] mica applied to the main window"),
                 Err(e) => log_line(&format!(

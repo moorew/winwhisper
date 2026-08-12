@@ -73,11 +73,19 @@ export default function Settings() {
   const [version, setVersion] = useState<string | null>(null);
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [active, setActive] = useState<string>("appearance");
+  const [storage, setStorage] = useState<{
+    models_bytes: number;
+    transcripts_bytes: number;
+    cache_bytes: number;
+    total_bytes: number;
+    models_dir: string;
+  } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     api.health().then((h) => setVersion(h.version)).catch(() => {});
+    api.storage().then(setStorage).catch(() => {});
     try {
       const [ms, ws, ds, all] = await Promise.all([
         api.models.list(),
@@ -449,15 +457,37 @@ export default function Settings() {
           <Group id="storage" label="Storage">
             <div className="px-4 py-[14px]">
               <p className="text-title font-medium text-text-strong">
-                {formatFileSize(modelsBytes)} used by models
+                {formatFileSize(storage?.total_bytes ?? modelsBytes)} used
               </p>
+              {/* Proportional stack: models, then transcripts, then cache. */}
               <div className="mt-2.5 flex h-1.5 overflow-hidden rounded-[3px] bg-track">
-                <span className="h-full bg-accent-ink" style={{ width: "100%" }} />
+                {storage && storage.total_bytes > 0 && (
+                  <>
+                    <span
+                      className="h-full bg-accent-ink"
+                      style={{ width: `${(storage.models_bytes / storage.total_bytes) * 100}%` }}
+                    />
+                    <span
+                      className="h-full bg-meter"
+                      style={{ width: `${(storage.transcripts_bytes / storage.total_bytes) * 100}%` }}
+                    />
+                    <span
+                      className="h-full bg-text-dim"
+                      style={{ width: `${(storage.cache_bytes / storage.total_bytes) * 100}%` }}
+                    />
+                  </>
+                )}
               </div>
-              <div className="mt-2 flex gap-4 text-meta text-text-dim">
-                <span>Models {formatFileSize(modelsBytes)}</span>
-                <span>{downloaded.length} installed</span>
+              <div className="tnum mt-2 flex flex-wrap gap-4 text-meta text-text-dim">
+                <span>Models {formatFileSize(storage?.models_bytes ?? modelsBytes)}</span>
+                <span>Transcripts {formatFileSize(storage?.transcripts_bytes ?? 0)}</span>
+                <span>Cache {formatFileSize(storage?.cache_bytes ?? 0)}</span>
               </div>
+              {storage?.models_dir && (
+                <p className="mt-2 break-all text-meta text-text-dim opacity-70">
+                  {storage.models_dir}
+                </p>
+              )}
             </div>
           </Group>
 

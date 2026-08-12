@@ -66,6 +66,11 @@ class DictationEngine:
         return self._active
 
     @property
+    def is_recording(self) -> bool:
+        """True while the hotkey is held and audio is being captured."""
+        return self._recording
+
+    @property
     def hotkey(self) -> Optional[str]:
         return self._hotkey
 
