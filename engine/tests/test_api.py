@@ -16,6 +16,7 @@ import pytest
 JOB_FIELDS = {
     "id", "status", "job_type", "source_name", "model_name",
     "progress", "error_message", "created_at", "updated_at", "transcript_id",
+    "stage",
 }
 MODEL_FIELDS = {
     "name", "repo_id", "size_mb", "speed", "description",
@@ -113,6 +114,38 @@ def test_settings_patch_reports_updated_keys(client):
 def test_transcribe_missing_file_is_404(client):
     r = client.post("/transcribe/file", json={"file_path": "/definitely/not/here.mp3"})
     assert r.status_code == 404
+
+
+def test_upload_honours_the_model_chosen_in_the_ui(client):
+    """
+    The dashboard sends model/language/diarize as multipart form fields. They
+    used to be declared as bare scalars, which FastAPI reads from the query
+    string, so every upload silently transcribed with the default "base" no
+    matter what the user picked.
+    """
+    r = client.post(
+        "/transcribe/upload",
+        files={"file": ("meeting.wav", b"RIFF....WAVEfmt ", "audio/wav")},
+        data={
+            "model_name": "large-v3",
+            "language": "fr",
+            "diarize": "true",
+            "translate": "true",
+        },
+    )
+    assert r.status_code == 202
+
+    job = client.get(f"/jobs/{r.json()['job_id']}").json()
+    assert job["model_name"] == "large-v3", "the selected model must reach the job"
+
+
+def test_upload_without_options_still_uses_sane_defaults(client):
+    r = client.post(
+        "/transcribe/upload",
+        files={"file": ("bare.wav", b"RIFF....WAVEfmt ", "audio/wav")},
+    )
+    assert r.status_code == 202
+    assert client.get(f"/jobs/{r.json()['job_id']}").json()["model_name"] == "base"
 
 
 def test_transcribe_upload_queues_a_job(client):

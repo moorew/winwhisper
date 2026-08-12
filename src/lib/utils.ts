@@ -47,6 +47,18 @@ export function formatRelativeTime(dateStr: string): string {
 }
 
 /**
+ * How long a job has been running, as "3m 20s". Shown next to the progress bar
+ * so a slow model is visibly making progress rather than looking frozen.
+ */
+export function formatElapsed(since: string, now: number = Date.now()): string {
+  const seconds = Math.max(0, Math.floor((now - parseEngineDate(since).getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/**
  * Strips characters Windows forbids in filenames. Transcript titles come from
  * source filenames and YouTube video titles, which routinely contain ":" and
  * "|" — leaving those in makes the save silently fail.

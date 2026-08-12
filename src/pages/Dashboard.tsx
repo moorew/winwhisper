@@ -41,7 +41,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn, formatDuration, formatRelativeTime, parseEngineDate } from "@/lib/utils";
+import { cn, formatDuration, formatElapsed, formatRelativeTime, parseEngineDate } from "@/lib/utils";
 
 type Tab = "file" | "youtube" | "record" | "system";
 
@@ -102,6 +102,8 @@ export default function Dashboard() {
   const [models, setModels] = useState<string[]>(["tiny", "base", "small", "medium", "large-v3"]);
   const [loadingTranscripts, setLoadingTranscripts] = useState(true);
   const activeCountRef = useRef(0);
+  // Ticks once a second purely so the elapsed-time readout keeps moving.
+  const [now, setNow] = useState(() => Date.now());
 
   // Batch selection
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -160,6 +162,12 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [loadTranscripts, pollJobs]);
 
+  useEffect(() => {
+    if (!jobs.some((j) => j.status === "processing")) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [jobs]);
+
   const dismissJob = useCallback(async (jobId: string) => {
     setJobs((prev) => prev.filter((j) => j.id !== jobId));
     try {
@@ -178,20 +186,51 @@ export default function Dashboard() {
     pollJobs();
   }, [pollJobs]);
 
-  // Tauri drag-drop
+  // Tauri drag-drop.
+  //
+  // With dragDropEnabled (the default) the webview hands OS drops to Tauri, so
+  // the HTML5 handlers below never fire for a real file drag — these events are
+  // the only route. They are core plugin commands, so they are also silently
+  // denied if the app ships without a capability granting core:event; that is
+  // exactly how drag-drop broke, so failures are surfaced rather than swallowed.
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<DragDropPayload>("tauri://drag-drop", (event) => {
-      const paths = event.payload.paths;
-      if (paths.length > 0) { setTab("file"); setDroppedPath(paths[0]); setDroppedFile(null); setIsDragging(false); }
-    }).then((fn) => { unlisten = fn; });
-    listen<unknown>("tauri://drag-enter", () => setIsDragging(true)).then((fn) => {
-      const prev = unlisten; unlisten = () => { fn(); prev?.(); };
+    const unlisteners: Array<() => void> = [];
+    let disposed = false;
+
+    const attach = <T,>(event: string, handler: (payload: T) => void) => {
+      listen<T>(event, (e) => handler(e.payload))
+        .then((fn) => {
+          if (disposed) fn();
+          else unlisteners.push(fn);
+        })
+        .catch((err) => {
+          console.error(
+            `[WinWhisper] could not subscribe to ${event} — drag and drop will not work.`,
+            err
+          );
+          setSubmitError(
+            "Drag and drop is unavailable in this build — use Browse to pick a file."
+          );
+        });
+    };
+
+    attach<DragDropPayload>("tauri://drag-drop", (payload) => {
+      const paths = payload?.paths ?? [];
+      if (paths.length > 0) {
+        setTab("file");
+        setDroppedPath(paths[0]);
+        setDroppedFile(null);
+        setIsDragging(false);
+        setSubmitError(null);
+      }
     });
-    listen<unknown>("tauri://drag-leave", () => setIsDragging(false)).then((fn) => {
-      const prev = unlisten; unlisten = () => { fn(); prev?.(); };
-    });
-    return () => unlisten?.();
+    attach<unknown>("tauri://drag-enter", () => setIsDragging(true));
+    attach<unknown>("tauri://drag-leave", () => setIsDragging(false));
+
+    return () => {
+      disposed = true;
+      unlisteners.forEach((fn) => fn());
+    };
   }, []);
 
   // Mic recording
@@ -714,7 +753,20 @@ export default function Dashboard() {
                         )}
                       </div>
                     </div>
-                    {job.status === "processing" && <Progress value={(job.progress ?? 0) * 100} />}
+                    {job.status === "processing" && (
+                      <>
+                        <Progress value={(job.progress ?? 0) * 100} />
+                        {/* A big model on a slow machine can sit on one step for
+                            many minutes. Naming the step and showing elapsed
+                            time is the difference between "working" and "hung". */}
+                        <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                          <span className="truncate">{job.stage ?? "Working…"}</span>
+                          <span className="tabular-nums flex-shrink-0">
+                            {formatElapsed(job.created_at, now)}
+                          </span>
+                        </div>
+                      </>
+                    )}
                     {job.status === "failed" && (
                       <p className="text-xs text-destructive break-words">
                         {job.error_message ?? "Transcription failed."}

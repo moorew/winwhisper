@@ -24,9 +24,18 @@ export default function App() {
     }
 
     // Primary: listen for the event emitted by Rust when the engine TCP port is live.
+    // Do not swallow the rejection quietly — this call is denied outright if the
+    // app ships without a capability granting core:event, and that silence is
+    // what hid the same failure breaking drag-and-drop for a whole release.
     const unlistenPromise = listen<number>("engine-ready", (event) => {
       applyPort(event.payload);
-    }).catch(() => null);
+    }).catch((err) => {
+      console.error(
+        "[WinWhisper] could not subscribe to engine-ready; falling back to polling.",
+        err
+      );
+      return null;
+    });
 
     // Fallback: poll every 2 s in case the event fires before the listener is attached
     // (e.g. very fast engine startup) or when running in dev without the Tauri shell.

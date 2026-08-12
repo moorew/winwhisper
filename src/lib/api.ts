@@ -24,6 +24,8 @@ export interface JobResponse {
   created_at: string;
   updated_at: string;
   transcript_id: string | null;
+  /** What the worker is doing right now, e.g. "Transcribing with large-v3". */
+  stage: string | null;
 }
 
 export interface TranscriptSummary {

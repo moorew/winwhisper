@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -194,12 +194,16 @@ async def transcribe_file(
 @router.post("/transcribe/upload", response_model=JobCreatedResponse, status_code=202)
 async def transcribe_upload(
     file: UploadFile = File(...),
-    model_name: str = "base",
-    language: Optional[str] = None,
-    diarize: bool = False,
-    translate: bool = False,
-    word_timestamps: bool = True,
-    vad_filter: bool = True,
+    # These MUST be Form(...). A bare scalar in a FastAPI endpoint is read from
+    # the query string, so the multipart fields the app sends were silently
+    # discarded and every upload fell back to these defaults — picking large-v3
+    # in the UI still transcribed with base.
+    model_name: str = Form("base"),
+    language: Optional[str] = Form(None),
+    diarize: bool = Form(False),
+    translate: bool = Form(False),
+    word_timestamps: bool = Form(True),
+    vad_filter: bool = Form(True),
     session: AsyncSession = Depends(get_session),
 ) -> JobCreatedResponse:
     dest = storage.temp_audio_path(f"{uuid.uuid4()}_{file.filename}")

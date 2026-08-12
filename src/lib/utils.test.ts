@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   formatDuration,
   formatFileSize,
+  formatElapsed,
   formatRelativeTime,
   parseEngineDate,
   safeFilename,
@@ -88,5 +89,20 @@ describe("formatFileSize", () => {
     expect(formatFileSize(2048)).toBe("2.0 KB");
     expect(formatFileSize(5 * 1024 * 1024)).toBe("5.0 MB");
     expect(formatFileSize(3 * 1024 ** 3)).toBe("3.00 GB");
+  });
+});
+
+describe("formatElapsed", () => {
+  const start = "2026-08-12T10:00:00";           // naive UTC, as the engine emits
+  const at = (iso: string) => new Date(iso).getTime();
+
+  it("counts seconds, then minutes, then hours", () => {
+    expect(formatElapsed(start, at("2026-08-12T10:00:42Z"))).toBe("42s");
+    expect(formatElapsed(start, at("2026-08-12T10:03:20Z"))).toBe("3m 20s");
+    expect(formatElapsed(start, at("2026-08-12T11:30:00Z"))).toBe("1h 30m");
+  });
+
+  it("never shows negative time when clocks disagree slightly", () => {
+    expect(formatElapsed(start, at("2026-08-12T09:59:50Z"))).toBe("0s");
   });
 });

@@ -9,7 +9,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import Job, get_session
-from core.job_worker import get_live_progress, request_cancel
+from core.job_worker import get_live_progress, get_live_stage, request_cancel
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -25,6 +25,9 @@ class JobResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     transcript_id: Optional[str]
+    # What the worker is doing right now ("Transcribing with large-v3"). None
+    # unless the job is actively running.
+    stage: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -34,6 +37,7 @@ def _with_live_progress(job: Job) -> JobResponse:
     live = get_live_progress(job.id)
     if live is not None:
         r.progress = live
+    r.stage = get_live_stage(job.id)
     return r
 
 

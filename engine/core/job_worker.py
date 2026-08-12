@@ -23,9 +23,23 @@ _live_progress: Dict[str, float] = {}
 # the worker would carry on transcribing and then overwrite the row with "done".
 _cancel_requested: Set[str] = set()
 
+# Which phase a running job is in, so the UI can say "Downloading" vs "Loading
+# model" vs "Transcribing". Without it a large model on a slow machine is
+# indistinguishable from a hung job — the bar just sits still.
+_live_stage: Dict[str, str] = {}
+
 
 def get_live_progress(job_id: str) -> Optional[float]:
     return _live_progress.get(job_id)
+
+
+def get_live_stage(job_id: str) -> Optional[str]:
+    return _live_stage.get(job_id)
+
+
+def _set_stage(job_id: str, stage: str) -> None:
+    _live_stage[job_id] = stage
+    print(f"[WinWhisper] job {job_id[:8]}: {stage}", flush=True)
 
 
 def request_cancel(job_id: str) -> None:
@@ -267,6 +281,7 @@ class JobWorker:
             finally:
                 self._current_job_id = None
                 _live_progress.pop(job_id, None)
+                _live_stage.pop(job_id, None)
                 _cancel_requested.discard(job_id)
                 self._queue.task_done()
 
@@ -285,6 +300,7 @@ class JobWorker:
             if not job.source_url:
                 raise ValueError("YouTube job has no source_url")
 
+            _set_stage(job_id, "Downloading from YouTube")
             audio_path, video_title = await _download_youtube(job_id, job.source_url)
             temp_audio = audio_path
 
@@ -301,6 +317,9 @@ class JobWorker:
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
         # ── Load model ─────────────────────────────────────────────────────
+        # Loading large-v3 off disk the first time is minutes, not seconds, and
+        # produces no progress of its own — say so rather than looking frozen.
+        _set_stage(job_id, f"Loading model ({job.model_name})")
         await asyncio.to_thread(transcriber.ensure_loaded, job.model_name)
 
         opts = job.options or {}
@@ -315,6 +334,7 @@ class JobWorker:
             _live_progress[job_id] = prog_base + p * prog_scale * 0.95
 
         # ── Transcription ──────────────────────────────────────────────────
+        _set_stage(job_id, f"Transcribing with {job.model_name}")
         try:
             segments, info = await asyncio.to_thread(
                 transcriber.transcribe_with_progress,
@@ -346,6 +366,7 @@ class JobWorker:
                 )
             else:
                 try:
+                    _set_stage(job_id, "Identifying speakers")
                     _live_progress[job_id] = 0.95
                     await _update_job(job_id, "processing", progress=0.95)
 

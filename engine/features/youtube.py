@@ -84,8 +84,18 @@ class YouTubeExtractor:
             "progress_hooks": [_hook],
             "quiet": True,
             "no_warnings": True,
+            # Without a socket timeout a stalled connection hangs this thread
+            # forever, and the job sits on "processing" with no way to tell a
+            # slow download from a dead one.
+            "socket_timeout": 30,
+            "retries": 3,
+            "fragment_retries": 3,
+            # We report progress through the hook; yt-dlp's own progress bar
+            # would otherwise spam the stdout the Tauri shell reads and logs.
+            "noprogress": True,
         }
 
+        print(f"[WinWhisper] YouTube: downloading audio for {url}", flush=True)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
@@ -109,6 +119,12 @@ class YouTubeExtractor:
             "video_id": video_id,
         }
 
+        size_mb = candidates[0].stat().st_size / (1024 * 1024)
+        print(
+            f"[WinWhisper] YouTube: downloaded {size_mb:.1f} MB "
+            f"({metadata['duration']}s of audio) — handing to the transcriber",
+            flush=True,
+        )
         return str(candidates[0]), metadata
 
 
