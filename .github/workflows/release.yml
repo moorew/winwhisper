@@ -354,11 +354,38 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
+      # The bundler fetches its NSIS toolchain from GitHub on every fresh
+      # runner. That download fails often enough to block releases outright
+      # ("failed to bundle project `io: Peer disconnected`"), so keep it
+      # between runs.
+      - name: Cache the Tauri bundler toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\tauri
+          key: ${{ runner.os }}-tauri-tools-nsis-3.11
+
       - name: Build Tauri app
-        run: npm run tauri:build
+        shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          # Compilation is deterministic; the toolchain download is not. Retry
+          # the whole build rather than fail a release on a dropped connection.
+          $attempts = 3
+          for ($i = 1; $i -le $attempts; $i++) {
+            Write-Host "=== tauri build, attempt $i of $attempts ==="
+            npm run tauri:build
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Build succeeded on attempt $i."
+              exit 0
+            }
+            if ($i -lt $attempts) {
+              Write-Host "Attempt $i failed; retrying in 30s..."
+              Start-Sleep -Seconds 30
+            }
+          }
+          throw "tauri build failed after $attempts attempts"
 
       # ── Verify the shipped executable carries the current app icon ───────
       # A stale icon survived a release once: tauri-build does not list the
