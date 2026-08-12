@@ -1,84 +1,285 @@
-import { ReactNode } from "react";
-import { NavLink } from "react-router-dom";
-import { Home, Cpu, Settings, Mic } from "lucide-react";
+import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { NavLink, useLocation } from "react-router-dom";
+import { House, Cpu, Settings, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useEngineHealth } from "@/hooks/useEngine";
+import { Mark } from "@/components/Mark";
 
 const NAV = [
-  { to: "/", icon: Home, label: "Dashboard" },
+  { to: "/", icon: House, label: "Dashboard" },
   { to: "/models", icon: Cpu, label: "Models" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ] as const;
 
+const RAIL_COLLAPSED = 56;
+const RAIL_EXPANDED = 208;
+const EXPAND_DELAY = 120;
+const COLLAPSE_DELAY = 200;
+
+/** Window controls talk to Tauri; in a browser they simply do nothing. */
+async function windowAction(action: "minimize" | "toggleMaximize" | "close") {
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const w = getCurrentWindow();
+    if (action === "minimize") await w.minimize();
+    else if (action === "toggleMaximize") await w.toggleMaximize();
+    else await w.close();
+  } catch {
+    // Running outside Tauri.
+  }
+}
+
 export default function Layout({
   children,
   engineReady,
+  readerTitle,
 }: {
   children: ReactNode;
   engineReady: boolean;
+  readerTitle?: string | null;
 }) {
   const { healthy } = useEngineHealth(engineReady);
+  const [maximized, setMaximized] = useState(false);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    (async () => {
+      try {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        const w = getCurrentWindow();
+        setMaximized(await w.isMaximized());
+        unlisten = await w.onResized(async () => setMaximized(await w.isMaximized()));
+      } catch {
+        // Not under Tauri.
+      }
+    })();
+    return () => unlisten?.();
+  }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
-      {/* Sidebar */}
-      <aside className="flex w-52 flex-shrink-0 flex-col border-r border-border bg-card">
-        {/* Logo */}
-        <div className="flex items-center gap-2 px-4 py-4 border-b border-border">
-          <Mic className="h-5 w-5 text-primary" />
-          <span className="font-semibold tracking-tight text-foreground">WinWhisper</span>
-        </div>
+    // The window's own surface. Mica shows through where the platform supports
+    // it; app-chrome is the gradient fallback.
+    <div
+      className={cn(
+        "app-chrome flex h-full flex-col overflow-hidden",
+        maximized ? "rounded-none" : "rounded-window"
+      )}
+    >
+      <TitleBar maximized={maximized} readerTitle={readerTitle} />
 
-        {/* Nav */}
-        <nav className="flex-1 space-y-0.5 p-2 pt-3">
-          {NAV.map(({ to, icon: Icon, label }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === "/"}
-              className={({ isActive }) =>
-                cn(
-                  "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                  isActive
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
-                )
-              }
-            >
-              <Icon className="h-4 w-4 flex-shrink-0" />
-              {label}
-            </NavLink>
-          ))}
-        </nav>
-
-        {/* Engine status */}
-        <div className="border-t border-border p-3">
-          <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
-            <span
-              className={cn(
-                "h-2 w-2 rounded-full flex-shrink-0",
-                !engineReady
-                  ? "bg-yellow-400 animate-pulse"
-                  : healthy
-                  ? "bg-green-500"
-                  : "bg-red-500 animate-pulse"
-              )}
-            />
-            <span>
-              {!engineReady
-                ? "Engine starting…"
-                : healthy
-                ? "Engine ready"
-                : "Engine offline"}
-            </span>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main */}
-      <main className="flex flex-1 flex-col overflow-hidden">
-        {children}
-      </main>
+      {/* The rail overlays the pane while expanded, so page content never
+          reflows on hover — hence the fixed left offset rather than a flex gap. */}
+      <div className="relative flex min-h-0 flex-1">
+        <Rail engineReady={engineReady} healthy={healthy} />
+        <main
+          className="min-w-0 flex-1 overflow-hidden border-l border-t border-pane-edge bg-pane rounded-tl-pane"
+          style={{ marginLeft: RAIL_COLLAPSED }}
+        >
+          {children}
+        </main>
+      </div>
     </div>
+  );
+}
+
+function TitleBar({
+  maximized,
+  readerTitle,
+}: {
+  maximized: boolean;
+  readerTitle?: string | null;
+}) {
+  return (
+    <div
+      data-tauri-drag-region
+      className="flex h-10 flex-shrink-0 items-center pl-[14px] select-none"
+    >
+      <Mark size={14} className="pointer-events-none text-accent-ink" />
+      <span
+        data-tauri-drag-region
+        className="pointer-events-none ml-[9px] truncate text-[12.5px] font-semibold tracking-[-0.005em] text-titlebar-text"
+      >
+        WinWhisper
+        {readerTitle ? (
+          <span className="text-titlebar-subtle"> — {readerTitle}</span>
+        ) : null}
+      </span>
+
+      <div data-tauri-drag-region className="flex-1" />
+
+      <div className="flex">
+        <ControlCell label="Minimise" onClick={() => windowAction("minimize")}>
+          <span className="block h-px w-[10px] bg-current" />
+        </ControlCell>
+        <ControlCell
+          label={maximized ? "Restore" : "Maximise"}
+          onClick={() => windowAction("toggleMaximize")}
+        >
+          {maximized ? (
+            // Two-square restore mark
+            <span className="relative block h-[9px] w-[9px]">
+              <span className="absolute left-0 top-[2px] h-[7px] w-[7px] rounded-[1px] border border-current" />
+              <span className="absolute left-[2px] top-0 h-[7px] w-[7px] rounded-[1px] border border-current bg-transparent" />
+            </span>
+          ) : (
+            <span className="block h-[9px] w-[9px] rounded-[1px] border border-current" />
+          )}
+        </ControlCell>
+        <ControlCell label="Close" onClick={() => windowAction("close")} danger>
+          <X size={12} strokeWidth={1.75} />
+        </ControlCell>
+      </div>
+    </div>
+  );
+}
+
+function ControlCell({
+  children,
+  onClick,
+  label,
+  danger,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  label: string;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className={cn(
+        "flex h-10 w-[46px] items-center justify-center text-titlebar-glyph transition-colors duration-[120ms]",
+        danger
+          ? "hover:bg-[#c42b1c] hover:text-white"
+          : "hover:bg-fill"
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Rail({
+  engineReady,
+  healthy,
+}: {
+  engineReady: boolean;
+  healthy: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const location = useLocation();
+
+  const schedule = useCallback((next: boolean) => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(
+      () => setExpanded(next),
+      next ? EXPAND_DELAY : COLLAPSE_DELAY
+    );
+  }, []);
+
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  // The dot carries a 3px halo of its own colour at 15%.
+  const status = !engineReady
+    ? { label: "Engine starting…", dot: "bg-warning ring-warning/15", pulse: true }
+    : healthy
+    ? { label: "Engine ready", dot: "bg-accent-ink ring-accent-ink/15", pulse: false }
+    : { label: "Engine offline", dot: "bg-danger ring-danger/15", pulse: true };
+
+  return (
+    <nav
+      aria-label="Main"
+      onMouseEnter={() => schedule(true)}
+      onMouseLeave={() => schedule(false)}
+      onFocus={() => setExpanded(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) schedule(false);
+      }}
+      style={{ width: expanded ? RAIL_EXPANDED : RAIL_COLLAPSED }}
+      className={cn(
+        "absolute inset-y-0 left-0 z-20 box-border flex flex-col gap-[3px] overflow-hidden px-2 pb-[10px] pt-1",
+        "transition-[width] duration-rail ease-out",
+        expanded && "app-chrome"
+      )}
+    >
+      {NAV.map(({ to, icon: Icon, label }) => (
+        <NavLink
+          key={to}
+          to={to}
+          end={to === "/"}
+          title={expanded ? undefined : label}
+          aria-current={
+            (to === "/" ? location.pathname === "/" : location.pathname.startsWith(to))
+              ? "page"
+              : undefined
+          }
+          className={({ isActive }) =>
+            cn(
+              "relative flex h-[38px] flex-shrink-0 items-center rounded-control transition-colors duration-[120ms]",
+              // 11px of clearance either side is what keeps the collapsed
+              // 18px icon optically centred in the 56px rail.
+              expanded ? "justify-start pl-[11px]" : "justify-center",
+              isActive
+                ? "bg-fill-strong text-text-strong"
+                : "text-text-muted hover:bg-fill-subtle"
+            )
+          }
+        >
+          {({ isActive }) => (
+            <>
+              {isActive && (
+                <span
+                  aria-hidden
+                  className="absolute left-[-4px] top-1/2 h-4 w-[3px] -translate-y-1/2 rounded-[2px] bg-accent-ink"
+                />
+              )}
+              <Icon size={18} strokeWidth={1.75} className="flex-shrink-0" />
+              {/* Collapsed, the label must occupy no width at all. Left in the
+                  layout at opacity-0 it pushes the icon off-centre and drags the
+                  item's clickable centre outside the rail's overflow clip, which
+                  makes the collapsed items unreliable to click. */}
+              <span
+                className={cn(
+                  "overflow-hidden whitespace-nowrap text-[13px] font-medium transition-opacity duration-100",
+                  expanded ? "ml-[13px] w-auto opacity-100" : "pointer-events-none w-0 opacity-0"
+                )}
+              >
+                {label}
+              </span>
+            </>
+          )}
+        </NavLink>
+      ))}
+
+      <div className="flex-1" />
+
+      <div
+        className={cn(
+          "flex h-[38px] flex-shrink-0 items-center",
+          expanded ? "pl-[11px]" : "justify-center"
+        )}
+        title={expanded ? undefined : status.label}
+      >
+        <span
+          className={cn(
+            "h-[7px] w-[7px] flex-shrink-0 rounded-full ring-[3px]",
+            status.dot,
+            status.pulse && "animate-pulse-dot"
+          )}
+        />
+        <span
+          className={cn(
+            "overflow-hidden whitespace-nowrap text-meta text-text-dim transition-opacity duration-100",
+            expanded ? "ml-[13px] w-auto opacity-100" : "pointer-events-none w-0 opacity-0"
+          )}
+        >
+          {status.label}
+        </span>
+      </div>
+    </nav>
   );
 }

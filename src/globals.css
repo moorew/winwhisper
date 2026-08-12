@@ -2,61 +2,260 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Token layer for the WinWhisper overhaul.
+ *
+ * Values are space-separated HSL triples consumed as hsl(var(--token)), which
+ * is the mechanism the project already used — the values are re-pointed, the
+ * approach is not forked. Dark is the default; `.dark` is toggled on <html>.
+ *
+ * The accent ships as a pair on purpose. --accent-fill (#427657) is only ever a
+ * filled surface with white on top; it measures 3.1:1 on the dark pane and
+ * fails AA as text. --accent-ink / --accent-deep are the readable counterparts
+ * for anything that is not a fill.
+ */
+
 @layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+  :root,
+  .dark {
+    /* Window chrome — stands in for mica when it is unavailable */
+    --chrome-from: 220 20% 13%;    /* #1a1e26 */
+    --chrome-mid: 220 16% 10%;     /* #14171d */
+    --chrome-to: 227 16% 9%;       /* #12141a */
+
+    /* Surfaces */
+    --pane: 220 17% 13%;           /* #1b1f27 */
+    --card: 218 16% 16%;           /* #22272f */
+    --input: 220 19% 11%;          /* #171b22 */
+    --segment-active: 216 16% 20%; /* #2a313b */
+
+    /* Lines */
+    --stroke: 0 0% 100% / 0.07;
+    --stroke-strong: 0 0% 100% / 0.1;
+    --hairline: 0 0% 100% / 0.05;
+    --pane-edge: 0 0% 100% / 0.06;
+
+    /* Text */
+    --text: 207 27% 97%;           /* #f4f7fa */
+    --text-strong: 207 24% 96%;    /* #f2f5f8 */
+    --text-body: 213 25% 89%;      /* #dde3ea */
+    --text-secondary: 213 26% 89%; /* #dbe1e9 */
+    --text-tertiary: 213 18% 84%;  /* #cfd6df */
+    --text-muted: 216 11% 64%;     /* #98a1af */
+    --text-dim: 216 7% 52%;        /* #7b838f */
+    --titlebar-text: 213 21% 92% / 0.72;
+    --titlebar-glyph: 213 21% 92% / 0.7;
+    --titlebar-subtle: 213 21% 92% / 0.32;
+
+    /* Accent */
+    --accent-fill: 143 28% 36%;    /* #427657 — filled surfaces, white on top */
+    --accent-ink: 143 33% 62%;     /* #7FBE95 — text/icons/indicators on dark */
+    --accent-on-fill: 0 0% 100%;
+    --accent-badge: 143 41% 76%;   /* #a9dcbb — accent text on an accent tint */
+
+    /* Neutral fills. Declared as tokens rather than literal white/black alphas
+     * so the light theme can invert them — a white overlay is invisible on a
+     * white pane, which is exactly how the first light pass broke. */
+    --fill-faint: 0 0% 100% / 0.015;
+    --fill-subtle: 0 0% 100% / 0.04;
+    --fill: 0 0% 100% / 0.06;
+    --fill-strong: 0 0% 100% / 0.09;
+    --track: 0 0% 100% / 0.09;
+    --dashed: 0 0% 100% / 0.15;
+    --preview-bg: 0 0% 0% / 0.16;
+    --meter: 216 8% 60%;           /* #8d97a4 — accuracy meter + toggle knob */
+
+    /* Supporting */
+    --danger: 13 82% 69%;          /* #f2836b */
+    --warning: 43 72% 66%;         /* #e8c46a */
+
+    --speaker-1: 227 85% 73%;      /* #7f9cf5 */
+    --speaker-2: 13 82% 69%;       /* #f2836b */
+    --speaker-3: 39 68% 62%;       /* #e0b45c */
+    --speaker-4: 268 76% 73%;      /* #b487f0 */
+    --speaker-5: 190 55% 60%;      /* #5fbdd1 */
+    --speaker-6: 334 68% 73%;      /* #e88ab0 */
+    --speaker-7: 92 40% 62%;       /* #9ac47a */
+    --speaker-8: 25 55% 63%;       /* #d4956b */
+
+    /* Compatibility aliases for shadcn-derived primitives already in the tree */
+    --background: var(--pane);
+    --foreground: var(--text);
+    --card-foreground: var(--text-strong);
+    --popover: var(--card);
+    --popover-foreground: var(--text-strong);
+    --primary: var(--accent-fill);
+    --primary-foreground: var(--accent-on-fill);
+    --secondary: 218 16% 16%;
+    --secondary-foreground: var(--text-secondary);
+    --muted: 218 16% 16%;
+    --muted-foreground: var(--text-muted);
+    --accent: 218 16% 20%;
+    --accent-foreground: var(--text-strong);
+    --destructive: var(--danger);
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 100% / 0.07;
+    --ring: var(--accent-ink);
     --radius: 0.5rem;
   }
 
-  .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+  .light {
+    --chrome-from: 220 20% 95%;    /* #eef0f4 */
+    --chrome-mid: 218 20% 92%;
+    --chrome-to: 218 20% 91%;      /* #e4e8ee */
+
+    --pane: 0 0% 100%;
+    --card: 220 20% 97%;           /* #f7f8fa */
+    --input: 0 0% 100%;
+    --segment-active: 216 20% 94%; /* #eceff3 */
+
+    --stroke: 0 0% 0% / 0.06;
+    --stroke-strong: 0 0% 0% / 0.09;
+    --hairline: 0 0% 0% / 0.05;
+    --pane-edge: 0 0% 0% / 0.08;
+
+    --text: 217 14% 9%;            /* #14171c */
+    --text-strong: 218 14% 11%;    /* #171a1f */
+    --text-body: 213 14% 20%;      /* #2b3138 */
+    --text-secondary: 214 13% 26%; /* #3a424c */
+    --text-tertiary: 213 11% 33%;  /* #4a525c */
+    --text-muted: 214 10% 39%;     /* #5a626d */
+    --text-dim: 220 9% 46%;        /* #6b7280 */
+    --titlebar-text: 218 14% 11% / 0.75;
+    --titlebar-glyph: 218 14% 11% / 0.62;
+    --titlebar-subtle: 218 14% 11% / 0.4;
+
+    /* accent-fill is unchanged; the readable accent goes darker on white */
+    --accent-ink: 147 32% 26%;     /* #2F5A41 — 7.9:1 on white */
+    --accent-badge: 147 32% 26%;   /* #a9dcbb is unreadable on a light tint */
+
+    --fill-faint: 0 0% 0% / 0.02;
+    --fill-subtle: 0 0% 0% / 0.035;
+    --fill: 0 0% 0% / 0.05;
+    --fill-strong: 0 0% 0% / 0.08;
+    --track: 0 0% 0% / 0.1;
+    --dashed: 0 0% 0% / 0.18;
+    --preview-bg: 0 0% 0% / 0.04;
+    --meter: 215 12% 48%;
+
+    --danger: 17 62% 49%;          /* #c9532f */
+    --warning: 41 80% 37%;         /* #a97a12 */
+
+    --speaker-1: 231 58% 55%;      /* #4a5fd0 */
+    --speaker-2: 17 62% 49%;       /* #c9532f */
+    --speaker-3: 40 82% 30%;       /* #8a5f0e */
+
+    --background: var(--pane);
+    --foreground: var(--text);
+    --secondary: 220 20% 97%;
+    --muted: 220 20% 97%;
+    --accent: 216 20% 94%;
+    --border: 0 0% 0% / 0.06;
   }
 }
 
 @layer base {
+  /* Anything with a bare `border` class gets the token, not currentColor. */
   * {
-    @apply border-border;
+    border-color: hsl(var(--border));
   }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
   body {
-    @apply bg-background text-foreground;
+    @apply bg-transparent text-foreground;
+    font-family: "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI",
+      system-ui, -apple-system, sans-serif;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
+    /* The custom titlebar owns the whole window; nothing should rubber-band. */
+    overflow: hidden;
   }
+
+  /* Every duration, size, percentage and timestamp lines up column-wise. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Anchors are set per theme — #7FBE95 on white is only 2.16:1. */
+  a {
+    color: hsl(var(--accent-ink));
+    text-underline-offset: 2px;
+  }
+  a:hover {
+    filter: brightness(1.12);
+  }
+
+  :focus-visible {
+    outline: 2px solid hsl(var(--accent-ink) / 0.6);
+    outline-offset: 2px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--text-dim) / 0.35);
+    border-radius: 5px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--text-dim) / 0.55);
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* The window base. Mica shows through when the platform provides it. */
+  .app-chrome {
+    background: linear-gradient(
+      150deg,
+      hsl(var(--chrome-from)) 0%,
+      hsl(var(--chrome-mid)) 46%,
+      hsl(var(--chrome-to)) 100%
+    );
+  }
+
+  .section-label {
+    font-size: 11.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: hsl(var(--text-dim));
+  }
+}
+
+@keyframes ww-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes ww-pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.animate-pulse-dot {
+  animation: ww-pulse-dot 1.6s ease-in-out infinite;
 }

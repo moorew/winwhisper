@@ -3,24 +3,22 @@ import { useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  Upload,
-  Youtube,
-  Search,
-  Trash2,
-  FileAudio,
-  Clock,
-  AlignLeft,
-  Loader2,
   AlertCircle,
-  RefreshCw,
-  Mic,
-  Square,
   Download,
-  CheckSquare,
-  Square as SquareIcon,
-  Info,
+  FileAudio,
+  FolderOpen,
+  Loader,
+  Mic,
+  MonitorSpeaker,
+  Play,
+  RefreshCw,
+  Search,
+  Square,
+  Trash2,
+  Upload,
   X,
-  Volume2,
+  Youtube,
+  Zap,
 } from "lucide-react";
 import {
   api,
@@ -28,60 +26,78 @@ import {
   CaptureStatus,
   JobResponse,
   TranscriptSummary,
-  TranscriptDetail,
-  YouTubeMetadata,
 } from "@/lib/api";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { cn, formatDuration, formatElapsed, formatRelativeTime, parseEngineDate } from "@/lib/utils";
+  Card,
+  PageHeader,
+  Pill,
+  PrimaryButton,
+  SecondaryButton,
+  SectionLabel,
+  Segmented,
+  Select,
+  Toggle,
+  Track,
+} from "@/components/ui/primitives";
+import { Mark } from "@/components/Mark";
+import {
+  cn,
+  formatDuration,
+  formatElapsed,
+  formatRelativeTime,
+  parseEngineDate,
+  safeFilename,
+} from "@/lib/utils";
 
-type Tab = "file" | "youtube" | "record" | "system";
+type Source = "file" | "youtube" | "record" | "system";
 
-interface TranscribeOptions {
-  model: string;
-  language: string;
-  diarize: boolean;
-  translate: boolean;
-}
+const SOURCES = [
+  { value: "file" as const, label: "File", icon: <FileAudio size={14} strokeWidth={1.75} /> },
+  { value: "youtube" as const, label: "YouTube", icon: <Youtube size={14} strokeWidth={1.75} /> },
+  { value: "record" as const, label: "Record", icon: <Mic size={14} strokeWidth={1.75} /> },
+  { value: "system" as const, label: "System audio", icon: <MonitorSpeaker size={14} strokeWidth={1.75} /> },
+];
 
-const DEFAULT_OPTS: TranscribeOptions = {
-  model: "base",
-  language: "",
-  diarize: false,
-  translate: false,
-};
+const LANGUAGES = [
+  { value: "", label: "Auto-detect" },
+  { value: "en", label: "English" },
+  { value: "es", label: "Spanish" },
+  { value: "fr", label: "French" },
+  { value: "de", label: "German" },
+  { value: "it", label: "Italian" },
+  { value: "pt", label: "Portuguese" },
+  { value: "nl", label: "Dutch" },
+  { value: "pl", label: "Polish" },
+  { value: "ru", label: "Russian" },
+  { value: "ja", label: "Japanese" },
+  { value: "zh", label: "Chinese" },
+];
 
 /** How long a failed job stays in the panel before it stops being reported. */
 const FAILURE_VISIBLE_MS = 30 * 60 * 1000;
 
 interface DragDropPayload {
   paths: string[];
-  position: { x: number; y: number };
 }
 
 export default function Dashboard() {
   const navigate = useNavigate();
 
-  const [tab, setTab] = useState<Tab>("file");
+  const [source, setSource] = useState<Source>("file");
   const [droppedPath, setDroppedPath] = useState<string | null>(null);
   const [droppedFile, setDroppedFile] = useState<File | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState("");
-  const [ytPreview, setYtPreview] = useState<YouTubeMetadata | null>(null);
-  const [ytPreviewLoading, setYtPreviewLoading] = useState(false);
-  const [opts, setOpts] = useState<TranscribeOptions>(DEFAULT_OPTS);
+  const [model, setModel] = useState("base");
+  const [language, setLanguage] = useState("");
+  const [diarize, setDiarize] = useState(false);
+  const [translate, setTranslate] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [device, setDevice] = useState<string | null>(null);
 
   // Microphone recording
   const [recording, setRecording] = useState(false);
@@ -90,74 +106,68 @@ export default function Dashboard() {
   const chunksRef = useRef<Blob[]>([]);
   const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // System audio capture (WASAPI loopback) — driven entirely by the engine
+  // System audio capture (engine-side, WASAPI loopback)
   const [captureStatus, setCaptureStatus] = useState<CaptureStatus | null>(null);
   const [loopbackDevices, setLoopbackDevices] = useState<AudioDevice[] | null>(null);
   const [captureError, setCaptureError] = useState<string | null>(null);
   const [captureBusy, setCaptureBusy] = useState(false);
 
-  // Data state
   const [transcripts, setTranscripts] = useState<TranscriptSummary[]>([]);
   const [jobs, setJobs] = useState<JobResponse[]>([]);
   const [search, setSearch] = useState("");
-  const [models, setModels] = useState<string[]>(["tiny", "base", "small", "medium", "large-v3"]);
   const [loadingTranscripts, setLoadingTranscripts] = useState(true);
   const activeCountRef = useRef(0);
-  // Ticks once a second purely so the elapsed-time readout keeps moving.
   const [now, setNow] = useState(() => Date.now());
 
-  // Batch selection
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [batchExporting, setBatchExporting] = useState(false);
-
+  // ── Data ────────────────────────────────────────────────────────────────
   useEffect(() => {
-    api.models.list().then((ms) => {
-      const downloaded = ms.filter((m) => m.is_downloaded).map((m) => m.name);
-      if (downloaded.length > 0) setModels(downloaded);
-      const active = ms.find((m) => m.is_active);
-      if (active) setOpts((o) => ({ ...o, model: active.name }));
-    }).catch(() => {});
+    api.models
+      .list()
+      .then((ms) => {
+        const downloaded = ms.filter((m) => m.is_downloaded).map((m) => m.name);
+        setAvailableModels(downloaded);
+        const active = ms.find((m) => m.is_active) ?? ms.find((m) => m.is_downloaded);
+        if (active) setModel(active.name);
+      })
+      .catch(() => {});
+    api.status()
+      .then((s) => {
+        const hw = s.hardware as { recommended_device?: string } | undefined;
+        setDevice(hw?.recommended_device === "cuda" ? "GPU" : "CPU");
+      })
+      .catch(() => {});
   }, []);
 
-  const loadTranscripts = useCallback((resetSelection = false) => {
+  const loadTranscripts = useCallback(() => {
     api.transcripts
       .list()
-      .then((ts) => { setTranscripts(ts); if (resetSelection) setSelected(new Set()); })
+      .then(setTranscripts)
       .catch(() => {})
       .finally(() => setLoadingTranscripts(false));
   }, []);
 
   const pollJobs = useCallback(async () => {
     try {
-      // Failed jobs are fetched too — without them a failure just vanishes from
-      // the panel and the user never learns why their transcription didn't run.
       const [processing, queued, failed] = await Promise.all([
         api.jobs.list({ status: "processing" }),
         api.jobs.list({ status: "queued" }),
         api.jobs.list({ status: "failed", limit: 10 }),
       ]);
-
-      const now = Date.now();
+      const cutoff = Date.now() - FAILURE_VISIBLE_MS;
       const recentFailures = failed.filter(
-        (j) => now - parseEngineDate(j.updated_at).getTime() < FAILURE_VISIBLE_MS
+        (j) => parseEngineDate(j.updated_at).getTime() > cutoff
       );
-
       const active = [...processing, ...queued];
-      const activeCount = active.length;
-
-      // Refresh transcripts while work is in flight, plus one extra tick after
-      // the queue drains so the newly-finished transcript is picked up.
-      if (activeCount > 0 || activeCountRef.current > 0) loadTranscripts();
-      activeCountRef.current = activeCount;
-
+      if (active.length > 0 || activeCountRef.current > 0) loadTranscripts();
+      activeCountRef.current = active.length;
       setJobs([...active, ...recentFailures]);
     } catch {
-      // Engine not reachable yet — leave the previous state alone.
+      // Engine not reachable yet.
     }
   }, [loadTranscripts]);
 
   useEffect(() => {
-    loadTranscripts(true);
+    loadTranscripts();
     pollJobs();
     const id = setInterval(pollJobs, 2000);
     return () => clearInterval(id);
@@ -169,65 +179,41 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [jobs]);
 
-  const dismissJob = useCallback(async (jobId: string) => {
-    setJobs((prev) => prev.filter((j) => j.id !== jobId));
-    try {
-      await api.jobs.dismiss(jobId);
-    } catch {
-      // Row may already be gone; the panel is updated either way.
-    }
-  }, []);
-
-  const cancelJob = useCallback(async (jobId: string) => {
-    try {
-      await api.jobs.cancel(jobId);
-    } catch {
-      // Most likely it finished a moment ago; the next poll will reflect that.
-    }
-    pollJobs();
-  }, [pollJobs]);
-
-  // Tauri drag-drop.
-  //
-  // With dragDropEnabled (the default) the webview hands OS drops to Tauri, so
-  // the HTML5 handlers below never fire for a real file drag — these events are
-  // the only route. They are core plugin commands, so they are also silently
-  // denied if the app ships without a capability granting core:event; that is
-  // exactly how drag-drop broke, so failures are surfaced rather than swallowed.
+  // ── Drag & drop ─────────────────────────────────────────────────────────
+  // Dropping anywhere in the pane activates the composer's drag-over state.
   useEffect(() => {
     const unlisteners: Array<() => void> = [];
     let disposed = false;
 
     const attach = <T,>(event: string, handler: (payload: T) => void) => {
       listen<T>(event, (e) => handler(e.payload))
-        .then((fn) => {
-          if (disposed) fn();
-          else unlisteners.push(fn);
-        })
-        .catch((err) => {
-          // Not fatal: the Rust-side queue below still delivers dropped files.
-          // Worth logging loudly though — a denial here means the capability
-          // config is wrong, which breaks every other Tauri event too.
+        .then((fn) => (disposed ? fn() : unlisteners.push(fn)))
+        .catch((err) =>
           console.error(
-            `[WinWhisper] could not subscribe to ${event}; ` +
-              "falling back to the polled drop queue.",
+            `[WinWhisper] could not subscribe to ${event}; using the polled drop queue.`,
             err
-          );
-        });
+          )
+        );
     };
 
-    attach<DragDropPayload>("tauri://drag-drop", (payload) => {
-      const paths = payload?.paths ?? [];
-      if (paths.length > 0) {
-        setTab("file");
-        setDroppedPath(paths[0]);
-        setDroppedFile(null);
-        setIsDragging(false);
-        setSubmitError(null);
-      }
+    const accept = (paths: string[]) => {
+      if (!paths.length) return;
+      setSource("file");
+      setDroppedPath(paths[0]);
+      setDroppedFile(null);
+      setIsDragging(false);
+      setSubmitError(null);
+    };
+
+    attach<DragDropPayload>("tauri://drag-drop", (p) => accept(p?.paths ?? []));
+    attach<DragDropPayload>("tauri://drag-enter", (p) => {
+      setIsDragging(true);
+      if (p?.paths?.length) setPendingName(p.paths[0].split(/[\\/]/).pop() ?? null);
     });
-    attach<unknown>("tauri://drag-enter", () => setIsDragging(true));
-    attach<unknown>("tauri://drag-leave", () => setIsDragging(false));
+    attach<unknown>("tauri://drag-leave", () => {
+      setIsDragging(false);
+      setPendingName(null);
+    });
 
     return () => {
       disposed = true;
@@ -235,28 +221,29 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Belt and braces: the Rust side also queues dropped paths, and draining that
-  // queue is a plain command rather than a permission-gated event. If the
-  // listener above is denied, this still delivers the file.
+  // Rust also queues drops; draining it is a plain command, so this works even
+  // if the event subscription above is denied by the capability ACL.
   useEffect(() => {
     let stopped = false;
     const id = setInterval(async () => {
       try {
         const paths = await invoke<string[]>("take_dropped_paths");
         if (stopped || !paths?.length) return;
-        setTab("file");
+        setSource("file");
         setDroppedPath(paths[0]);
         setDroppedFile(null);
         setIsDragging(false);
         setSubmitError(null);
       } catch {
-        // Not running under Tauri (browser dev) — nothing to collect.
+        // Not under Tauri.
       }
     }, 700);
     return () => { stopped = true; clearInterval(id); };
   }, []);
 
-  // Mic recording
+  const [pendingName, setPendingName] = useState<string | null>(null);
+
+  // ── Microphone ──────────────────────────────────────────────────────────
   async function startRecording() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -265,10 +252,9 @@ export default function Dashboard() {
       mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       mr.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: "audio/webm" });
-        const file = new File([blob], `recording-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`, { type: "audio/webm" });
-        setDroppedFile(file);
+        const name = `recording-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
+        setDroppedFile(new File([blob], name, { type: "audio/webm" }));
         setDroppedPath(null);
-        setTab("file");
         stream.getTracks().forEach((t) => t.stop());
         if (recordTimerRef.current) clearInterval(recordTimerRef.current);
         setRecordSeconds(0);
@@ -279,7 +265,7 @@ export default function Dashboard() {
       setRecordSeconds(0);
       recordTimerRef.current = setInterval(() => setRecordSeconds((s) => s + 1), 1000);
     } catch {
-      setSubmitError("Microphone access denied. Check your browser permissions.");
+      setSubmitError("Microphone access was denied.");
     }
   }
 
@@ -288,72 +274,43 @@ export default function Dashboard() {
     setRecording(false);
   }
 
-  useEffect(() => {
-    return () => {
-      mediaRecorderRef.current?.stop();
-      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
-    };
+  useEffect(() => () => {
+    mediaRecorderRef.current?.stop();
+    if (recordTimerRef.current) clearInterval(recordTimerRef.current);
   }, []);
 
-  // Look up the video as soon as a URL is pasted, so the user can confirm they
-  // picked the right one (and catch a bad link) before committing to a job.
+  // ── System audio ────────────────────────────────────────────────────────
   useEffect(() => {
-    const url = youtubeUrl.trim();
-    if (tab !== "youtube" || !/^https?:\/\//i.test(url)) {
-      setYtPreview(null);
-      return;
-    }
-
+    if (source !== "system") return;
     let cancelled = false;
-    setYtPreviewLoading(true);
-    const timer = setTimeout(() => {
-      api.transcribe
-        .youtubeMetadata(url)
-        .then((meta) => { if (!cancelled) setYtPreview(meta); })
-        .catch(() => { if (!cancelled) setYtPreview(null); })
-        .finally(() => { if (!cancelled) setYtPreviewLoading(false); });
-    }, 600);
 
-    return () => { cancelled = true; clearTimeout(timer); setYtPreviewLoading(false); };
-  }, [youtubeUrl, tab]);
-
-  // ── System audio capture ───────────────────────────────────────────────
-  // Recording happens in the engine (WASAPI loopback), so the UI just drives
-  // start/stop and polls for the elapsed time. Stopping queues the job itself.
-  useEffect(() => {
-    if (tab !== "system") return;
-
-    let cancelled = false;
     if (loopbackDevices === null) {
       api.audio
         .devices()
-        .then((ds) => { if (!cancelled) setLoopbackDevices(ds.filter((d) => d.is_loopback)); })
+        .then((ds) => !cancelled && setLoopbackDevices(ds.filter((d) => d.is_loopback)))
         .catch((e) => {
-          if (!cancelled) {
-            setLoopbackDevices([]);
-            setCaptureError(
-              e instanceof Error && e.message.includes("503")
-                ? "System audio capture needs WASAPI, which is only available on Windows."
-                : "Could not list audio devices."
-            );
-          }
+          if (cancelled) return;
+          setLoopbackDevices([]);
+          setCaptureError(
+            e instanceof Error && e.message.includes("503")
+              ? "System audio capture needs WASAPI, which is Windows-only."
+              : "Could not list audio devices."
+          );
         });
     }
 
-    const poll = () => api.audio.status()
-      .then((s) => { if (!cancelled) setCaptureStatus(s); })
-      .catch(() => {});
+    const poll = () =>
+      api.audio.status().then((s) => !cancelled && setCaptureStatus(s)).catch(() => {});
     poll();
     const id = setInterval(poll, 1000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [tab, loopbackDevices]);
+  }, [source, loopbackDevices]);
 
   async function startSystemCapture() {
     setCaptureBusy(true);
     setCaptureError(null);
     try {
-      const device = loopbackDevices?.[0];
-      await api.audio.startCapture({ loopback: true, device_index: device?.index });
+      await api.audio.startCapture({ loopback: true, device_index: loopbackDevices?.[0]?.index });
       setCaptureStatus(await api.audio.status());
     } catch (e) {
       setCaptureError(e instanceof Error ? e.message : String(e));
@@ -366,13 +323,7 @@ export default function Dashboard() {
     setCaptureBusy(true);
     setCaptureError(null);
     try {
-      // transcribe:true makes the engine queue the recording immediately, so it
-      // shows up in the Activity panel without a further round trip.
-      await api.audio.stopCapture({
-        transcribe: true,
-        model_name: opts.model,
-        diarize: opts.diarize,
-      });
+      await api.audio.stopCapture({ transcribe: true, model_name: model, diarize });
       setCaptureStatus(await api.audio.status());
       pollJobs();
     } catch (e) {
@@ -382,37 +333,41 @@ export default function Dashboard() {
     }
   }
 
-  function handleFileInput(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (file) { setDroppedFile(file); setDroppedPath(null); }
-  }
-
-  function onDragOver(e: React.DragEvent) { e.preventDefault(); setIsDragging(true); }
-  function onDragLeave() { setIsDragging(false); }
-  function onDrop(e: React.DragEvent) {
-    e.preventDefault(); setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) { setDroppedFile(file); setDroppedPath(null); }
-  }
+  // ── Submit ──────────────────────────────────────────────────────────────
+  const hasSource =
+    source === "youtube" ? youtubeUrl.trim().length > 0 : Boolean(droppedPath || droppedFile);
+  const canSubmit = hasSource && availableModels.length > 0 && !submitting && !recording;
 
   async function handleTranscribe() {
     setSubmitError(null);
     setSubmitting(true);
     try {
-      if (tab === "file" || tab === "record") {
-        if (droppedPath) {
-          await api.transcribe.file({ file_path: droppedPath, model_name: opts.model, language: opts.language || undefined, diarize: opts.diarize, translate: opts.translate });
-        } else if (droppedFile) {
-          await api.transcribe.upload(droppedFile, { model_name: opts.model, language: opts.language || undefined, diarize: opts.diarize, translate: opts.translate });
-        } else {
-          setSubmitError(tab === "record" ? "Record audio first, then click Transcribe." : "Drop a file or click Browse first.");
-          return;
-        }
-      } else {
-        if (!youtubeUrl.trim()) { setSubmitError("Enter a YouTube URL."); return; }
-        await api.transcribe.youtube({ url: youtubeUrl.trim(), model_name: opts.model, language: opts.language || undefined, diarize: opts.diarize });
+      if (source === "youtube") {
+        await api.transcribe.youtube({
+          url: youtubeUrl.trim(),
+          model_name: model,
+          language: language || undefined,
+          diarize,
+        });
+      } else if (droppedPath) {
+        await api.transcribe.file({
+          file_path: droppedPath,
+          model_name: model,
+          language: language || undefined,
+          diarize,
+          translate,
+        });
+      } else if (droppedFile) {
+        await api.transcribe.upload(droppedFile, {
+          model_name: model,
+          language: language || undefined,
+          diarize,
+          translate,
+        });
       }
-      setDroppedPath(null); setDroppedFile(null); setYoutubeUrl("");
+      setDroppedPath(null);
+      setDroppedFile(null);
+      setYoutubeUrl("");
       pollJobs();
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : String(err));
@@ -421,550 +376,660 @@ export default function Dashboard() {
     }
   }
 
-  // Batch export — fetch each selected transcript and combine into one TXT
-  async function handleBatchExport() {
-    if (selected.size === 0) return;
-    setBatchExporting(true);
+  const cancelJob = useCallback(async (id: string) => {
+    try { await api.jobs.cancel(id); } catch { /* already finished */ }
+    pollJobs();
+  }, [pollJobs]);
+
+  const dismissJob = useCallback(async (id: string) => {
+    setJobs((prev) => prev.filter((j) => j.id !== id));
+    try { await api.jobs.dismiss(id); } catch { /* already gone */ }
+  }, []);
+
+  async function exportTranscript(t: TranscriptSummary) {
     try {
-      const details: TranscriptDetail[] = await Promise.all(
-        [...selected].map((id) => api.transcripts.get(id))
-      );
-      const parts = details.map((t) => {
-        const header = `=== ${t.title} ===`;
-        const body = t.segments.map((s) => {
-          const prefix = s.speaker_label ? `[${s.speaker_label}] ` : "";
-          return `${prefix}${s.text.trim()}`;
-        }).join("\n");
-        return `${header}\n\n${body}`;
-      });
-      const content = parts.join("\n\n\n");
-      const blob = new Blob([content], { type: "text/plain" });
-      const url = URL.createObjectURL(blob);
+      const detail = await api.transcripts.get(t.id);
+      const text = detail.segments
+        .map((s) => `${s.speaker_label ? `[${s.speaker_label}] ` : ""}${s.text.trim()}`)
+        .join("\n");
+      const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
       const a = document.createElement("a");
       a.href = url;
-      a.download = `WinWhisper-export-${new Date().toISOString().slice(0, 10)}.txt`;
+      a.download = `${safeFilename(t.title)}.txt`;
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
-      setSelected(new Set());
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBatchExporting(false);
     }
   }
 
-  function toggleSelect(id: string) {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
-
-  function toggleSelectAll() {
-    setSelected((prev) =>
-      prev.size === filtered.length ? new Set() : new Set(filtered.map((t) => t.id))
-    );
-  }
+  // Keyboard: Ctrl+O browses.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        fileInputRef.current?.click();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const fileName = droppedPath ? droppedPath.split(/[\\/]/).pop() : droppedFile?.name;
-  const filtered = transcripts.filter((t) => t.title.toLowerCase().includes(search.toLowerCase()));
-
-  const statusColor: Record<string, string> = {
-    queued: "secondary", processing: "default", done: "success", failed: "destructive", cancelled: "outline",
-  };
-
-  const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
-    { id: "file", label: "File", icon: <FileAudio className="h-3.5 w-3.5" /> },
-    { id: "youtube", label: "YouTube", icon: <Youtube className="h-3.5 w-3.5" /> },
-    { id: "record", label: "Record", icon: <Mic className="h-3.5 w-3.5" /> },
-    { id: "system", label: "System", icon: <Volume2 className="h-3.5 w-3.5" /> },
-  ];
-
+  const filtered = transcripts.filter((t) =>
+    t.title.toLowerCase().includes(search.toLowerCase())
+  );
   const capturing = captureStatus?.active ?? false;
 
   return (
-    <TooltipProvider>
-      <div className="flex h-full overflow-hidden">
-        {/* Left: New Transcription panel */}
-        <div className="flex w-72 flex-shrink-0 flex-col gap-4 border-r border-border p-4 overflow-y-auto">
-          <h2 className="text-sm font-semibold text-foreground">New Transcription</h2>
+    <div className="flex h-full flex-col overflow-hidden">
+      <PageHeader
+        title="Transcribe"
+        subtitle="Everything runs on this machine"
+        right={
+          <Pill>
+            <Zap size={14} strokeWidth={1.75} className="text-accent-ink" />
+            <span className="tnum">
+              {model}
+              {device ? ` · ${device}` : ""}
+            </span>
+          </Pill>
+        }
+      />
 
-          {/* Tabs */}
-          <div className="flex rounded-lg bg-muted p-0.5">
-            {TABS.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className={cn(
-                  "flex flex-1 items-center justify-center gap-1 rounded-md py-1.5 text-xs font-medium transition-colors",
-                  tab === t.id ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {t.icon}
-                {t.label}
-              </button>
-            ))}
+      <div className="flex min-h-0 flex-1 flex-col gap-[18px] overflow-y-auto px-6 pb-6 pt-0.5">
+        {/* ── Composer ───────────────────────────────────────────────── */}
+        <Card className="flex flex-col gap-[14px] p-4">
+          <div className="flex items-center justify-between gap-3">
+            <Segmented value={source} onChange={setSource} options={SOURCES} />
+            <span className="hidden text-meta text-text-dim sm:block">Ctrl+O to browse</span>
           </div>
 
-          {/* File tab */}
-          {(tab === "file") && (
-            <>
-              <div
-                onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}
-                className={cn(
-                  "flex flex-col items-center justify-center rounded-lg border-2 border-dashed p-6 text-center cursor-pointer transition-colors",
-                  isDragging ? "border-primary bg-primary/10" : "border-border hover:border-muted-foreground/50"
-                )}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <FileAudio className="h-8 w-8 text-muted-foreground mb-2" />
-                {fileName ? (
-                  <p className="text-sm font-medium text-foreground break-all">{fileName}</p>
-                ) : (
-                  <>
-                    <p className="text-xs font-medium text-foreground">Drop audio / video here</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">or click to browse</p>
-                  </>
-                )}
-              </div>
-              <input ref={fileInputRef} type="file" accept="audio/*,video/*" className="hidden" onChange={handleFileInput} />
-            </>
-          )}
-
-          {/* YouTube tab */}
-          {tab === "youtube" && (
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-2 rounded-md border border-input bg-background px-3 py-2">
-                <Youtube className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                <input
-                  value={youtubeUrl}
-                  onChange={(e) => setYoutubeUrl(e.target.value)}
-                  placeholder="https://youtube.com/watch?v=…"
-                  className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-                />
-              </div>
-
-              {ytPreviewLoading && (
-                <div className="flex items-center gap-2 px-1 text-xs text-muted-foreground">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  <span>Looking up video…</span>
-                </div>
-              )}
-
-              {ytPreview && !ytPreviewLoading && (
-                <div className="flex gap-2 rounded-md border border-border p-2">
-                  {ytPreview.thumbnail && (
-                    <img
-                      src={ytPreview.thumbnail}
-                      alt=""
-                      className="h-12 w-20 flex-shrink-0 rounded object-cover"
-                    />
-                  )}
-                  <div className="min-w-0">
-                    <p className="text-xs font-medium leading-snug line-clamp-2">
-                      {ytPreview.title}
-                    </p>
-                    <p className="mt-0.5 text-xs text-muted-foreground truncate">
-                      {ytPreview.uploader}
-                      {ytPreview.duration > 0 && ` · ${formatDuration(ytPreview.duration)}`}
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Record tab */}
-          {tab === "record" && (
-            <div className="flex flex-col items-center gap-3 rounded-lg border border-border p-4">
-              {recording ? (
-                <>
-                  <div className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
-                    <span className="text-sm font-mono tabular-nums">
-                      {String(Math.floor(recordSeconds / 60)).padStart(2, "0")}:{String(recordSeconds % 60).padStart(2, "0")}
-                    </span>
-                  </div>
-                  <Button variant="destructive" size="sm" className="w-full" onClick={stopRecording}>
-                    <Square className="mr-2 h-3.5 w-3.5 fill-current" />
-                    Stop Recording
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Mic className="h-8 w-8 text-muted-foreground" />
-                  {fileName && tab === "record" ? (
-                    <p className="text-xs text-center text-muted-foreground">
-                      Ready: <span className="font-medium text-foreground">{fileName}</span>
-                    </p>
-                  ) : (
-                    <p className="text-xs text-muted-foreground text-center">
-                      Record from your microphone, then click Transcribe.
-                    </p>
-                  )}
-                  <Button variant="outline" size="sm" className="w-full" onClick={startRecording}>
-                    <Mic className="mr-2 h-3.5 w-3.5" />
-                    Start Recording
-                  </Button>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* System audio tab */}
-          {tab === "system" && (
-            <div className="flex flex-col items-center gap-3 rounded-lg border border-border p-4">
-              {capturing ? (
-                <>
-                  <div className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
-                    <span className="text-sm font-mono tabular-nums">
-                      {formatDuration(captureStatus?.duration_seconds ?? 0)}
-                    </span>
-                  </div>
-                  {captureStatus?.device_name && (
-                    <p className="text-xs text-muted-foreground text-center break-words">
-                      {captureStatus.device_name}
-                    </p>
-                  )}
-                  <Button
-                    variant="destructive" size="sm" className="w-full"
-                    onClick={stopSystemCapture} disabled={captureBusy}
-                  >
-                    {captureBusy
-                      ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                      : <Square className="mr-2 h-3.5 w-3.5 fill-current" />
-                    }
-                    Stop &amp; Transcribe
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Volume2 className="h-8 w-8 text-muted-foreground" />
-                  <p className="text-xs text-muted-foreground text-center">
-                    Records what your computer is playing — calls, videos, anything
-                    on your speakers. Nothing from your microphone.
-                  </p>
-                  <Button
-                    variant="outline" size="sm" className="w-full"
-                    onClick={startSystemCapture}
-                    disabled={captureBusy || loopbackDevices?.length === 0}
-                  >
-                    {captureBusy
-                      ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                      : <Volume2 className="mr-2 h-3.5 w-3.5" />
-                    }
-                    Start Recording
-                  </Button>
-                </>
-              )}
-              {captureError && (
-                <p className="text-xs text-destructive text-center">{captureError}</p>
-              )}
-            </div>
-          )}
-
-          {/* Options */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-xs text-muted-foreground">Model</label>
-              <select
-                value={opts.model}
-                onChange={(e) => setOpts((o) => ({ ...o, model: e.target.value }))}
-                className="rounded border border-input bg-background px-2 py-1 text-xs text-foreground"
-              >
-                {models.map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
-            </div>
-            <div className="flex items-center justify-between">
-              <label className="text-xs text-muted-foreground">Language</label>
+          {source === "youtube" ? (
+            <div className="flex h-[34px] items-center gap-2 rounded-control border border-stroke-strong bg-input px-3">
+              <Youtube size={15} strokeWidth={1.75} className="flex-shrink-0 text-text-dim" />
               <input
-                value={opts.language}
-                onChange={(e) => setOpts((o) => ({ ...o, language: e.target.value }))}
-                placeholder="auto"
-                className="w-20 rounded border border-input bg-background px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground"
+                value={youtubeUrl}
+                onChange={(e) => setYoutubeUrl(e.target.value)}
+                placeholder="Paste a YouTube link"
+                className="flex-1 bg-transparent text-[12.5px] text-text-secondary outline-none placeholder:text-text-dim"
               />
             </div>
+          ) : source === "record" ? (
+            <RecordPanel
+              recording={recording}
+              seconds={recordSeconds}
+              fileName={fileName}
+              onStart={startRecording}
+              onStop={stopRecording}
+            />
+          ) : source === "system" ? (
+            <SystemPanel
+              capturing={capturing}
+              status={captureStatus}
+              busy={captureBusy}
+              error={captureError}
+              unavailable={loopbackDevices?.length === 0}
+              onStart={startSystemCapture}
+              onStop={stopSystemCapture}
+            />
+          ) : (
+            <DropZone
+              dragging={isDragging}
+              fileName={fileName ?? pendingName ?? undefined}
+              model={model}
+              language={LANGUAGES.find((l) => l.value === language)?.label ?? "Auto-detect"}
+              onBrowse={() => fileInputRef.current?.click()}
+            />
+          )}
 
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={opts.diarize} onChange={(e) => setOpts((o) => ({ ...o, diarize: e.target.checked }))} className="accent-primary" />
-              <span className="text-xs text-muted-foreground">Speaker diarization</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Info className="h-3 w-3 text-muted-foreground/60 cursor-help flex-shrink-0" />
-                </TooltipTrigger>
-                <TooltipContent side="right">
-                  Identifies who is speaking and when — labels each sentence with a speaker tag
-                  (Speaker 1, Speaker 2…). Requires a HuggingFace token in Settings.
-                </TooltipContent>
-              </Tooltip>
-            </label>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="audio/*,video/*"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) { setDroppedFile(f); setDroppedPath(null); setSource("file"); }
+            }}
+          />
 
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" checked={opts.translate} onChange={(e) => setOpts((o) => ({ ...o, translate: e.target.checked }))} className="accent-primary" />
-              <span className="text-xs text-muted-foreground">Translate to English</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Info className="h-3 w-3 text-muted-foreground/60 cursor-help flex-shrink-0" />
-                </TooltipTrigger>
-                <TooltipContent side="right">
-                  Transcribes foreign-language audio and translates the result to English in one step.
-                  Not available for YouTube transcriptions.
-                </TooltipContent>
-              </Tooltip>
-            </label>
+          {/* Options */}
+          <div className="flex flex-wrap items-center gap-3">
+            <Select
+              label="Model"
+              value={model}
+              onChange={setModel}
+              minWidth={132}
+              options={
+                availableModels.length
+                  ? availableModels.map((m) => ({ value: m, label: m }))
+                  : [{ value: model, label: "No models yet" }]
+              }
+            />
+            <Select
+              label="Language"
+              value={language}
+              onChange={setLanguage}
+              minWidth={150}
+              options={LANGUAGES}
+            />
+            <span className="h-[22px] w-px bg-stroke-strong" />
+            <Toggle checked={diarize} onChange={setDiarize} label="Speaker labels" />
+            <Toggle
+              checked={translate}
+              onChange={setTranslate}
+              label="Translate to English"
+              disabled={source === "youtube"}
+            />
+            <div className="flex-1" />
+            <PrimaryButton
+              onClick={handleTranscribe}
+              disabled={!canSubmit}
+              className={cn(source === "system" && "hidden")}
+            >
+              {submitting ? (
+                <Loader size={15} strokeWidth={1.75} className="animate-spin" />
+              ) : (
+                <Play size={15} strokeWidth={1.75} />
+              )}
+              Transcribe
+            </PrimaryButton>
           </div>
 
           {submitError && (
-            <div className="flex items-start gap-2 rounded-md bg-destructive/10 p-2 text-xs text-destructive">
-              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+            <div className="flex items-start gap-2 text-meta text-danger">
+              <AlertCircle size={14} strokeWidth={1.75} className="mt-px flex-shrink-0" />
               <span>{submitError}</span>
             </div>
           )}
-
-          {/* System capture queues its own job when you stop it. */}
-          {tab !== "system" && (
-            <Button onClick={handleTranscribe} disabled={submitting || recording} className="w-full">
-              {submitting ? (
-                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Queuing…</>
-              ) : (
-                <><Upload className="mr-2 h-4 w-4" />Transcribe</>
-              )}
-            </Button>
+          {availableModels.length === 0 && (
+            <p className="text-meta text-text-dim">
+              No model on disk yet — download one from the Models page to start transcribing.
+            </p>
           )}
-        </div>
+        </Card>
 
-        {/* Right: Transcripts + Jobs */}
-        <div className="flex flex-1 flex-col overflow-hidden">
-          {/* Active jobs */}
-          {jobs.length > 0 && (
-            <div className="border-b border-border px-4 py-3 space-y-2">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Activity</p>
-              <div className="space-y-2">
-                {jobs.map((job) => (
-                  <div
-                    key={job.id}
-                    className={cn(
-                      "rounded-md p-3 space-y-1.5",
-                      job.status === "failed" ? "bg-destructive/10" : "bg-muted"
-                    )}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium truncate">{job.source_name ?? "Untitled"}</span>
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
-                        <Badge variant={(statusColor[job.status] ?? "secondary") as "default" | "secondary" | "destructive" | "outline" | "success"}>
-                          {job.status}
-                        </Badge>
-                        {(job.status === "processing" || job.status === "queued") && (
-                          <button
-                            onClick={() => cancelJob(job.id)}
-                            title="Cancel this transcription"
-                            className="text-muted-foreground hover:text-destructive transition-colors"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                        {job.status === "failed" && (
-                          <button
-                            onClick={() => dismissJob(job.id)}
-                            title="Dismiss"
-                            className="text-muted-foreground hover:text-foreground transition-colors"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                    {job.status === "processing" && (
-                      <>
-                        <Progress value={(job.progress ?? 0) * 100} />
-                        {/* A big model on a slow machine can sit on one step for
-                            many minutes. Naming the step and showing elapsed
-                            time is the difference between "working" and "hung". */}
-                        <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                          <span className="truncate">{job.stage ?? "Working…"}</span>
-                          <span className="tabular-nums flex-shrink-0">
-                            {formatElapsed(job.created_at, now)}
-                          </span>
-                        </div>
-                        {job.partial_text && <LivePreview text={job.partial_text} />}
-                      </>
-                    )}
-                    {job.status === "failed" && (
-                      <p className="text-xs text-destructive break-words">
-                        {job.error_message ?? "Transcription failed."}
-                      </p>
-                    )}
-                  </div>
-                ))}
-              </div>
+        {/* ── Active / failed jobs ───────────────────────────────────── */}
+        {jobs.map((job) => (
+          <JobCard
+            key={job.id}
+            job={job}
+            now={now}
+            onCancel={() => cancelJob(job.id)}
+            onDismiss={() => dismissJob(job.id)}
+          />
+        ))}
+
+        {/* ── Recent ─────────────────────────────────────────────────── */}
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-3">
+            <SectionLabel>Recent</SectionLabel>
+            <div className="flex items-center gap-2">
+              <Pill className="w-[220px]">
+                <Search size={14} strokeWidth={1.75} className="flex-shrink-0 text-text-dim" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search transcripts"
+                  className="w-full bg-transparent text-[12.5px] text-text-secondary outline-none placeholder:text-text-dim"
+                />
+              </Pill>
+              <button
+                type="button"
+                aria-label="Refresh"
+                title="Refresh"
+                onClick={loadTranscripts}
+                className="flex h-[30px] w-[30px] items-center justify-center rounded-full border border-stroke-strong bg-input text-text-tertiary transition-colors duration-[120ms] hover:bg-fill-strong"
+              >
+                <RefreshCw size={14} strokeWidth={1.75} />
+              </button>
             </div>
-          )}
-
-          {/* Search + batch export toolbar */}
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
-            <Search className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search transcripts…"
-              className="border-0 p-0 shadow-none focus-visible:ring-0 h-auto text-sm"
-            />
-            {filtered.length > 0 && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={toggleSelectAll}
-                    className={cn(
-                      "transition-colors flex-shrink-0",
-                      selected.size > 0 ? "text-primary" : "text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    {selected.size === filtered.length && filtered.length > 0
-                      ? <CheckSquare className="h-4 w-4" />
-                      : <SquareIcon className="h-4 w-4" />
-                    }
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {selected.size === filtered.length ? "Deselect all" : "Select all for batch export"}
-                </TooltipContent>
-              </Tooltip>
-            )}
-            {selected.size > 0 && (
-              <Button variant="outline" size="sm" onClick={handleBatchExport} disabled={batchExporting} className="flex-shrink-0 text-xs">
-                {batchExporting
-                  ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                  : <Download className="mr-1.5 h-3.5 w-3.5" />
-                }
-                Export {selected.size}
-              </Button>
-            )}
-            <button onClick={() => loadTranscripts(true)} className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0">
-              <RefreshCw className="h-3.5 w-3.5" />
-            </button>
           </div>
 
-          <ScrollArea className="flex-1">
-            {loadingTranscripts ? (
-              <div className="flex items-center justify-center py-12 text-muted-foreground">
-                <Loader2 className="h-5 w-5 animate-spin mr-2" />
-                <span className="text-sm">Loading…</span>
-              </div>
-            ) : filtered.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-                <FileAudio className="h-10 w-10 mb-3 opacity-30" />
-                <p className="text-sm">
-                  {search ? "No transcripts match your search" : "No transcripts yet"}
-                </p>
-                {!search && <p className="text-xs mt-1 opacity-70">Drop an audio file or record from your mic to get started</p>}
-              </div>
-            ) : (
-              <div className="divide-y divide-border">
-                {filtered.map((t) => (
-                  <TranscriptRow
-                    key={t.id}
-                    transcript={t}
-                    selected={selected.has(t.id)}
-                    onToggleSelect={() => toggleSelect(t.id)}
-                    onOpen={() => navigate(`/editor/${t.id}`)}
-                    onDelete={async () => { await api.transcripts.delete(t.id); loadTranscripts(true); }}
-                  />
-                ))}
-              </div>
-            )}
-          </ScrollArea>
+          {!loadingTranscripts && filtered.length === 0 ? (
+            <EmptyState
+              searching={search.length > 0}
+              onBrowse={() => fileInputRef.current?.click()}
+              onRecord={() => setSource("record")}
+            />
+          ) : (
+            <Card className="overflow-hidden">
+              {filtered.map((t, i) => (
+                <TranscriptRow
+                  key={t.id}
+                  transcript={t}
+                  first={i === 0}
+                  onOpen={() => navigate(`/editor/${t.id}`)}
+                  onExport={() => exportTranscript(t)}
+                  onDelete={async () => {
+                    await api.transcripts.delete(t.id);
+                    loadTranscripts();
+                  }}
+                />
+              ))}
+            </Card>
+          )}
         </div>
       </div>
-    </TooltipProvider>
-  );
-}
-
-/**
- * Rolling preview of the transcript while it is still being produced.
- *
- * The engine sends only the tail, so the newest words are always at the end —
- * the box is kept pinned to the bottom so they stay in view without the panel
- * growing as the job runs.
- */
-function LivePreview({ text }: { text: string }) {
-  const boxRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const el = boxRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [text]);
-
-  return (
-    <div
-      ref={boxRef}
-      className="max-h-16 overflow-y-auto rounded bg-background/60 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground"
-    >
-      {text}
-      <span className="ml-0.5 inline-block h-3 w-1 translate-y-0.5 animate-pulse bg-primary/70" />
     </div>
   );
 }
 
-function TranscriptRow({
-  transcript: t,
-  selected,
-  onToggleSelect,
-  onOpen,
-  onDelete,
+/* ── Composer panels ────────────────────────────────────────────────────── */
+
+function DropZone({
+  dragging,
+  fileName,
+  model,
+  language,
+  onBrowse,
 }: {
-  transcript: TranscriptSummary;
-  selected: boolean;
-  onToggleSelect: () => void;
-  onOpen: () => void;
-  onDelete: () => Promise<void>;
+  dragging: boolean;
+  fileName?: string;
+  model: string;
+  language: string;
+  onBrowse: () => void;
 }) {
-  const [deleting, setDeleting] = useState(false);
+  return (
+    <div
+      onClick={onBrowse}
+      className={cn(
+        "flex h-[122px] cursor-pointer flex-col items-center justify-center gap-[9px] rounded-[9px] border border-dashed transition-colors duration-[120ms]",
+        dragging
+          ? "border-accent-ink/40 bg-accent-ink/[0.06]"
+          : "border-dropline bg-fill-faint"
+      )}
+    >
+      <div
+        className={cn(
+          "flex h-[42px] w-[42px] items-center justify-center rounded-full transition-colors duration-[120ms]",
+          dragging ? "bg-accent-ink/[0.18]" : "bg-accent-ink/[0.12]"
+        )}
+      >
+        <Upload size={19} strokeWidth={1.75} className="text-accent-ink" />
+      </div>
+      {dragging ? (
+        <>
+          <p className="text-title text-text-secondary">
+            Drop to transcribe{fileName ? ` ${fileName}` : ""}
+          </p>
+          <p className="text-meta text-text-dim">
+            {model} · {language}
+          </p>
+        </>
+      ) : fileName ? (
+        <>
+          <p className="max-w-[420px] truncate text-title text-text-secondary">{fileName}</p>
+          <p className="text-meta text-text-dim">Ready — press Transcribe</p>
+        </>
+      ) : (
+        <>
+          <p className="text-title text-text-secondary">Drop an audio or video file</p>
+          <p className="text-meta text-text-dim">
+            MP3 · WAV · M4A · FLAC · MP4 · MKV · up to 8 hours
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function RecordPanel({
+  recording,
+  seconds,
+  fileName,
+  onStart,
+  onStop,
+}: {
+  recording: boolean;
+  seconds: number;
+  fileName?: string;
+  onStart: () => void;
+  onStop: () => void;
+}) {
+  return (
+    <div className="flex h-[122px] flex-col items-center justify-center gap-[9px] rounded-[9px] border border-stroke bg-fill-faint">
+      {recording ? (
+        <>
+          <div className="flex items-center gap-2">
+            <span className="h-2 w-2 animate-pulse-dot rounded-full bg-danger" />
+            <span className="tnum text-[15px] font-semibold text-text-strong">
+              {formatDuration(seconds)}
+            </span>
+          </div>
+          <SecondaryButton onClick={onStop}>
+            <Square size={14} strokeWidth={1.75} className="fill-current" />
+            Stop recording
+          </SecondaryButton>
+        </>
+      ) : (
+        <>
+          <div className="flex h-[42px] w-[42px] items-center justify-center rounded-full bg-accent-ink/[0.12]">
+            <Mic size={19} strokeWidth={1.75} className="text-accent-ink" />
+          </div>
+          <p className="text-title text-text-secondary">
+            {fileName ? `Ready — ${fileName}` : "Record from your microphone"}
+          </p>
+          <SecondaryButton onClick={onStart}>
+            <Mic size={14} strokeWidth={1.75} />
+            Start recording
+          </SecondaryButton>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SystemPanel({
+  capturing,
+  status,
+  busy,
+  error,
+  unavailable,
+  onStart,
+  onStop,
+}: {
+  capturing: boolean;
+  status: CaptureStatus | null;
+  busy: boolean;
+  error: string | null;
+  unavailable?: boolean;
+  onStart: () => void;
+  onStop: () => void;
+}) {
+  return (
+    <div className="flex h-[122px] flex-col items-center justify-center gap-[9px] rounded-[9px] border border-stroke bg-fill-faint px-4 text-center">
+      {capturing ? (
+        <>
+          <div className="flex items-center gap-2">
+            <span className="h-2 w-2 animate-pulse-dot rounded-full bg-danger" />
+            <span className="tnum text-[15px] font-semibold text-text-strong">
+              {formatDuration(status?.duration_seconds ?? 0)}
+            </span>
+          </div>
+          {status?.device_name && (
+            <p className="max-w-[420px] truncate text-meta text-text-dim">{status.device_name}</p>
+          )}
+          <PrimaryButton onClick={onStop} disabled={busy}>
+            {busy ? (
+              <Loader size={15} strokeWidth={1.75} className="animate-spin" />
+            ) : (
+              <Square size={15} strokeWidth={1.75} className="fill-current" />
+            )}
+            Stop &amp; transcribe
+          </PrimaryButton>
+        </>
+      ) : (
+        <>
+          <div className="flex h-[42px] w-[42px] items-center justify-center rounded-full bg-accent-ink/[0.12]">
+            <MonitorSpeaker size={19} strokeWidth={1.75} className="text-accent-ink" />
+          </div>
+          <p className="text-title text-text-secondary">Record what your computer is playing</p>
+          <p className="max-w-[380px] text-meta text-text-dim">
+            Calls, videos, anything on your speakers — never your microphone.
+          </p>
+          <SecondaryButton onClick={onStart} disabled={busy || unavailable}>
+            <MonitorSpeaker size={14} strokeWidth={1.75} />
+            Start capture
+          </SecondaryButton>
+        </>
+      )}
+      {error && <p className="text-meta text-danger">{error}</p>}
+    </div>
+  );
+}
+
+/* ── Job card ───────────────────────────────────────────────────────────── */
+
+function JobCard({
+  job,
+  now,
+  onCancel,
+  onDismiss,
+}: {
+  job: JobResponse;
+  now: number;
+  onCancel: () => void;
+  onDismiss: () => void;
+}) {
+  const failed = job.status === "failed";
+  const percent = Math.round((job.progress ?? 0) * 100);
+
+  const badge = failed
+    ? "Failed"
+    : job.status === "queued"
+    ? "Queued"
+    : job.stage?.startsWith("Downloading")
+    ? "Downloading audio"
+    : "Transcribing";
 
   return (
     <div
       className={cn(
-        "flex items-center gap-3 px-4 py-3 cursor-pointer group transition-colors",
-        selected ? "bg-primary/5" : "hover:bg-accent/50"
+        "flex flex-col gap-[11px] rounded-card border px-4 py-[14px]",
+        failed
+          ? "border-danger/20 bg-gradient-to-r from-danger/[0.09] to-danger/[0.02]"
+          : "border-accent-ink/20 bg-gradient-to-r from-accent-ink/[0.09] to-accent-ink/[0.02]"
       )}
-      onClick={onOpen}
     >
-      <button
-        onClick={(e) => { e.stopPropagation(); onToggleSelect(); }}
-        className={cn(
-          "flex-shrink-0 transition-colors",
-          selected ? "text-primary" : "text-muted-foreground/30 group-hover:text-muted-foreground/60"
+      <div className="flex items-center gap-3">
+        {failed ? (
+          <AlertCircle size={15} strokeWidth={1.75} className="flex-shrink-0 text-danger" />
+        ) : (
+          <Loader size={15} strokeWidth={1.75} className="flex-shrink-0 animate-spin text-accent-ink" />
         )}
-      >
-        {selected ? <CheckSquare className="h-4 w-4" /> : <SquareIcon className="h-4 w-4" />}
-      </button>
-      <FileAudio className="h-5 w-5 text-muted-foreground flex-shrink-0" />
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">{t.title}</p>
-        <div className="flex items-center gap-3 mt-0.5 text-xs text-muted-foreground">
-          {t.duration != null && (
-            <span className="flex items-center gap-1">
-              <Clock className="h-3 w-3" />
-              {formatDuration(t.duration)}
-            </span>
+        <span className="max-w-[520px] truncate text-title font-semibold text-text-strong">
+          {job.source_name ?? "Untitled"}
+        </span>
+        <span
+          className={cn(
+            "flex h-[22px] flex-shrink-0 items-center rounded-[11px] px-2.5 text-[11px] font-semibold",
+            failed ? "bg-danger/[0.16] text-danger" : "bg-accent-ink/[0.16] text-accent-badge"
           )}
-          <span className="flex items-center gap-1">
-            <AlignLeft className="h-3 w-3" />
-            {t.word_count.toLocaleString()} words
+        >
+          {badge}
+        </span>
+        <div className="flex-1" />
+        {!failed && (
+          <span className="tnum flex-shrink-0 text-meta text-text-muted">
+            {percent}% · {formatElapsed(job.created_at, now)}
           </span>
-          <span>{formatRelativeTime(t.created_at)}</span>
-        </div>
+        )}
+        <button
+          type="button"
+          aria-label={failed ? "Dismiss" : "Cancel"}
+          title={failed ? "Dismiss" : "Cancel"}
+          onClick={failed ? onDismiss : onCancel}
+          className="flex-shrink-0 text-text-dim transition-colors duration-[120ms] hover:text-text-strong"
+        >
+          <X size={15} strokeWidth={1.75} />
+        </button>
       </div>
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          if (!deleting) { setDeleting(true); onDelete().finally(() => setDeleting(false)); }
-        }}
-        className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all"
-      >
-        {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-      </button>
+
+      {!failed && <Track value={percent} />}
+
+      {failed ? (
+        <p className="text-meta text-danger">{job.error_message ?? "Transcription failed."}</p>
+      ) : (
+        <p className="tnum text-meta text-text-dim">
+          {/* The badge already names the phase — don't repeat it here. */}
+          {[
+            job.model_name,
+            job.job_type === "youtube" ? "YouTube" : job.job_type === "file" ? "File" : job.job_type,
+            job.stage?.startsWith("Loading") ? job.stage : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
+      )}
+
+      {/* Live transcript preview — the tail of what has been decoded so far. */}
+      {job.partial_text && <LivePreview text={job.partial_text} />}
+    </div>
+  );
+}
+
+function LivePreview({ text }: { text: string }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = boxRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [text]);
+  return (
+    <div
+      ref={boxRef}
+      className="max-h-16 overflow-y-auto rounded-segment bg-preview px-2.5 py-2 text-[12px] leading-relaxed text-text-muted"
+    >
+      {text}
+      <span className="ml-0.5 inline-block h-3 w-[3px] translate-y-0.5 animate-pulse bg-accent-ink/70" />
+    </div>
+  );
+}
+
+/* ── Recent list ────────────────────────────────────────────────────────── */
+
+function TranscriptRow({
+  transcript: t,
+  first,
+  onOpen,
+  onExport,
+  onDelete,
+}: {
+  transcript: TranscriptSummary;
+  first: boolean;
+  onOpen: () => void;
+  onExport: () => void;
+  onDelete: () => Promise<void>;
+}) {
+  const [deleting, setDeleting] = useState(false);
+
+  const tint =
+    t.source_type === "youtube"
+      ? "bg-danger/[0.12] text-danger"
+      : t.source_type === "microphone"
+      ? "bg-accent-ink/[0.12] text-accent-ink"
+      : "bg-fill text-text-muted";
+
+  const Icon = t.source_type === "youtube" ? Youtube : t.source_type === "microphone" ? Mic : FileAudio;
+
+  return (
+    <div
+      onClick={onOpen}
+      className={cn(
+        "group flex cursor-pointer items-center gap-[13px] px-[14px] py-3 transition-colors duration-[120ms] hover:bg-fill-subtle",
+        !first && "border-t border-hairline"
+      )}
+    >
+      <div className={cn("flex h-[34px] w-[34px] flex-shrink-0 items-center justify-center rounded-tile", tint)}>
+        <Icon size={16} strokeWidth={1.75} />
+      </div>
+
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-title font-medium text-text-strong">{t.title}</p>
+        <p className="tnum mt-0.5 truncate text-meta text-text-dim">
+          {[
+            t.duration != null ? formatDuration(t.duration) : null,
+            `${t.word_count.toLocaleString()} words`,
+            t.language ? t.language.toUpperCase() : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
+      </div>
+
+      <span className="tnum w-[62px] flex-shrink-0 text-right text-meta text-text-dim group-hover:hidden">
+        {formatRelativeTime(t.created_at)}
+      </span>
+
+      <div className="hidden flex-shrink-0 items-center gap-1 group-hover:flex">
+        <RowAction label="Export as TXT" onClick={onExport}>
+          <Download size={14} strokeWidth={1.75} />
+        </RowAction>
+        <RowAction
+          label="Delete"
+          danger
+          onClick={() => {
+            if (!deleting) {
+              setDeleting(true);
+              onDelete().finally(() => setDeleting(false));
+            }
+          }}
+        >
+          {deleting ? (
+            <Loader size={14} strokeWidth={1.75} className="animate-spin" />
+          ) : (
+            <Trash2 size={14} strokeWidth={1.75} />
+          )}
+        </RowAction>
+      </div>
+    </div>
+  );
+}
+
+function RowAction({
+  children,
+  onClick,
+  label,
+  danger,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  label: string;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      className={cn(
+        "flex h-7 w-7 items-center justify-center rounded-segment text-text-muted transition-colors duration-[120ms]",
+        danger ? "hover:bg-danger/[0.12] hover:text-danger" : "hover:bg-fill-strong hover:text-text-strong"
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function EmptyState({
+  searching,
+  onBrowse,
+  onRecord,
+}: {
+  searching: boolean;
+  onBrowse: () => void;
+  onRecord: () => void;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-4 rounded-card border border-stroke px-6 py-14 text-center">
+      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-fill-subtle">
+        <Mark size={40} className="text-text-muted opacity-[0.28]" />
+      </div>
+      <p className="text-[15px] font-semibold text-text-tertiary">
+        {searching ? "No transcripts match your search" : "No transcripts yet"}
+      </p>
+      {!searching && (
+        <>
+          <p className="max-w-[320px] text-[12.5px] leading-[1.55] text-text-dim">
+            Drop a file above, paste a YouTube link, or record straight from your mic.
+          </p>
+          <div className="flex items-center gap-2">
+            <SecondaryButton onClick={onBrowse}>
+              <FolderOpen size={14} strokeWidth={1.75} />
+              Browse files
+            </SecondaryButton>
+            <SecondaryButton onClick={onRecord}>
+              <Mic size={14} strokeWidth={1.75} />
+              Record
+            </SecondaryButton>
+          </div>
+        </>
+      )}
     </div>
   );
 }

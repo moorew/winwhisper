@@ -153,6 +153,7 @@ pub fn run() {
         })
         .setup(|app| {
             let handle = app.handle().clone();
+            apply_window_material(&handle);
             setup_tray(&handle)?;
             // Show the window immediately so users see the UI while the engine loads
             show_window(&handle);
@@ -849,6 +850,25 @@ fn preflight_dll_check(bundle_dir: &Path) {
             }
         }
     }
+}
+
+/// Mica behind the custom titlebar and rail, on the Windows 11 builds that
+/// support it. Purely cosmetic: the chrome gradient in globals.css is what the
+/// window falls back to, so a failure here is not worth surfacing.
+fn apply_window_material(handle: &AppHandle) {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(window) = handle.get_webview_window("main") {
+            match window_vibrancy::apply_mica(&window, None) {
+                Ok(()) => log_line("[WinWhisper] mica applied to the main window"),
+                Err(e) => log_line(&format!(
+                    "[WinWhisper] mica unavailable ({e}) — using the gradient fallback"
+                )),
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = handle;
 }
 
 fn show_window(handle: &AppHandle) {

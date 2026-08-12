@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { api, setEnginePort } from "@/lib/api";
 import Layout from "@/components/Layout";
+import { ReaderTitleProvider } from "@/lib/reader-title";
 import Onboarding from "@/components/Onboarding";
 import Dashboard from "@/pages/Dashboard";
 import Editor from "@/pages/Editor";
@@ -12,6 +13,7 @@ import Settings from "@/pages/Settings";
 
 export default function App() {
   const [engineReady, setEngineReady] = useState(false);
+  const [readerTitle, setReaderTitle] = useState<string | null>(null);
 
   useEffect(() => {
     let stopped = false;
@@ -65,16 +67,18 @@ export default function App() {
   }, []);
 
   return (
-    <div className="h-screen bg-background text-foreground overflow-hidden">
-      <Layout engineReady={engineReady}>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/editor/:id" element={<Editor />} />
-          <Route path="/models" element={<Models />} />
-          <Route path="/settings" element={<Settings />} />
-        </Routes>
-      </Layout>
-      {engineReady && <Onboarding />}
-    </div>
+    <ReaderTitleProvider value={setReaderTitle}>
+      <div className="h-full text-foreground">
+        <Layout engineReady={engineReady} readerTitle={readerTitle}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/editor/:id" element={<Editor />} />
+            <Route path="/models" element={<Models />} />
+            <Route path="/settings" element={<Settings />} />
+          </Routes>
+        </Layout>
+        {engineReady && <Onboarding />}
+      </div>
+    </ReaderTitleProvider>
   );
 }

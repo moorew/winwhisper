@@ -1,81 +1,68 @@
-import { useCallback, useEffect, useState } from "react";
+import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
-  Settings as SettingsIcon,
-  Folder,
-  Keyboard,
-  Save,
-  Loader2,
-  AlertCircle,
   Check,
-  Info,
   ExternalLink,
+  Folder,
+  FolderOpen,
+  Keyboard,
+  Loader,
+  Moon,
+  Save,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { api, ModelInfo, WatchFolderStatus, DictationStatus } from "@/lib/api";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Separator } from "@/components/ui/separator";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { api, DictationStatus, ModelInfo, WatchFolderStatus } from "@/lib/api";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
+  Card,
+  PageHeader,
+  SecondaryButton,
+  SectionLabel,
+  Segmented,
+  Select,
+  Toggle,
+} from "@/components/ui/primitives";
+import { cn, formatFileSize } from "@/lib/utils";
 
-function useTheme() {
-  const [theme, setThemeSt] = useState<"light" | "dark">(() => {
-    const stored = localStorage.getItem("ww-theme");
-    return stored === "light" ? "light" : "dark";
-  });
+type ThemeChoice = "system" | "light" | "dark";
 
-  function setTheme(t: "light" | "dark") {
-    document.documentElement.classList.remove("light", "dark");
-    document.documentElement.classList.add(t);
-    localStorage.setItem("ww-theme", t);
-    setThemeSt(t);
-  }
+const SECTIONS = [
+  { id: "appearance", label: "Appearance" },
+  { id: "transcription", label: "Transcription" },
+  { id: "automation", label: "Automation" },
+  { id: "storage", label: "Storage" },
+  { id: "about", label: "About" },
+] as const;
 
-  return { theme, setTheme };
-}
+const EXPORT_FORMATS = ["TXT", "SRT", "VTT", "JSON"] as const;
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        "relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        checked ? "bg-primary" : "bg-input"
-      )}
-    >
-      <span
-        className={cn(
-          "inline-block h-4 w-4 transform rounded-full bg-background shadow transition-transform",
-          checked ? "translate-x-4" : "translate-x-0.5"
-        )}
-      />
-    </button>
-  );
+/** Applies a theme choice to <html>, following the OS when set to System. */
+function applyTheme(choice: ThemeChoice) {
+  const root = document.documentElement;
+  const prefersLight =
+    typeof window !== "undefined" &&
+    window.matchMedia("(prefers-color-scheme: light)").matches;
+  const effective = choice === "system" ? (prefersLight ? "light" : "dark") : choice;
+  root.classList.remove("light", "dark");
+  root.classList.add(effective);
+  localStorage.setItem("ww-theme", choice);
 }
 
 export default function Settings() {
-  const { theme, setTheme } = useTheme();
+  const [theme, setTheme] = useState<ThemeChoice>(
+    () => (localStorage.getItem("ww-theme") as ThemeChoice) || "dark"
+  );
 
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [activeModel, setActiveModel] = useState("base");
+  const [diarize, setDiarize] = useState(false);
+  const [autoExport, setAutoExport] = useState<string[]>([]);
 
   const [watchStatus, setWatchStatus] = useState<WatchFolderStatus | null>(null);
   const [watchPath, setWatchPath] = useState("");
-  const [watchModel, setWatchModel] = useState("base");
-  const [watchDiarize, setWatchDiarize] = useState(false);
   const [watchBusy, setWatchBusy] = useState(false);
 
   const [dictStatus, setDictStatus] = useState<DictationStatus | null>(null);
   const [dictHotkey, setDictHotkey] = useState("ctrl+shift+space");
+  const [capturingHotkey, setCapturingHotkey] = useState(false);
   const [dictBusy, setDictBusy] = useState(false);
 
   const [hfToken, setHfToken] = useState("");
@@ -83,47 +70,72 @@ export default function Settings() {
   const [savedKey, setSavedKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [version, setVersion] = useState<string | null>(null);
-  const [hardware, setHardware] = useState<{
-    recommended_device: string;
-    gpu_name: string | null;
-    cpu: string;
-  } | null>(null);
+  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
+  const [active, setActive] = useState<string>("appearance");
+
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
-    // Reported by the engine so this never drifts from the shipped build.
     api.health().then((h) => setVersion(h.version)).catch(() => {});
-    api.status()
-      .then((s) => setHardware(s.hardware as typeof hardware))
-      .catch(() => {});
     try {
-      const [ms, ws, ds, allSettings] = await Promise.all([
+      const [ms, ws, ds, all] = await Promise.all([
         api.models.list(),
         api.watchFolder.status(),
         api.dictation.status(),
         api.settings.getAll(),
       ]);
       setModels(ms);
-      const active = ms.find((m) => m.is_active);
-      if (active) setActiveModel(active.name);
-
+      const act = ms.find((m) => m.is_active);
+      if (act) setActiveModel(act.name);
       setWatchStatus(ws);
       setWatchPath(ws.folder_path ?? "");
-
       setDictStatus(ds);
       setDictHotkey(ds.hotkey ?? "ctrl+shift+space");
-
-      if (allSettings["watch_folder_model"]) setWatchModel(String(allSettings["watch_folder_model"]));
-      if (allSettings["watch_folder_diarize"]) setWatchDiarize(Boolean(allSettings["watch_folder_diarize"]));
-      if (allSettings["hf_token"]) setHfToken(String(allSettings["hf_token"]));
+      if (all["diarization_enabled"]) setDiarize(Boolean(all["diarization_enabled"]));
+      if (all["hf_token"]) setHfToken(String(all["hf_token"]));
+      if (Array.isArray(all["auto_export"])) setAutoExport(all["auto_export"] as string[]);
     } catch {
-      // Engine might not be ready yet — ignore
+      // Engine not ready — the page still renders.
     }
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { applyTheme(theme); }, [theme]);
+
+  // Follows the OS while the choice is System.
+  useEffect(() => {
+    if (theme !== "system") return;
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const onChange = () => applyTheme("system");
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [theme]);
+
+  // Section nav scroll-spy.
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+        if (visible) setActive(visible.target.id);
+      },
+      { root, rootMargin: "-10% 0px -70% 0px", threshold: 0 }
+    );
+    SECTIONS.forEach((s) => {
+      const el = document.getElementById(s.id);
+      if (el) observer.observe(el);
+    });
+    return () => observer.disconnect();
+  }, []);
+
+  function flash(key: string) {
+    setSavedKey(key);
+    setTimeout(() => setSavedKey(null), 2000);
+  }
 
   async function handleActivateModel(name: string) {
     setSaving(true);
@@ -137,21 +149,30 @@ export default function Settings() {
     }
   }
 
+  async function handleDiarize(v: boolean) {
+    setDiarize(v);
+    try { await api.settings.update("diarization_enabled", v); } catch { /* non-fatal */ }
+  }
+
+  async function toggleExportFormat(f: string) {
+    const next = autoExport.includes(f)
+      ? autoExport.filter((x) => x !== f)
+      : [...autoExport, f];
+    setAutoExport(next);
+    try { await api.settings.update("auto_export", next); } catch { /* non-fatal */ }
+  }
+
   async function handleWatchToggle(enabled: boolean) {
     setWatchBusy(true);
     setError(null);
     try {
       if (enabled) {
-        if (!watchPath.trim()) {
-          setError("Enter a folder path to watch.");
-          return;
-        }
-        await api.watchFolder.start({ folder_path: watchPath.trim(), model_name: watchModel, diarize: watchDiarize });
+        if (!watchPath.trim()) { setError("Enter a folder path to watch."); return; }
+        await api.watchFolder.start({ folder_path: watchPath.trim(), model_name: activeModel });
       } else {
         await api.watchFolder.stop();
       }
-      const ws = await api.watchFolder.status();
-      setWatchStatus(ws);
+      setWatchStatus(await api.watchFolder.status());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -163,19 +184,35 @@ export default function Settings() {
     setDictBusy(true);
     setError(null);
     try {
-      if (enabled) {
-        await api.dictation.start(dictHotkey);
-      } else {
-        await api.dictation.stop();
-      }
-      const ds = await api.dictation.status();
-      setDictStatus(ds);
+      if (enabled) await api.dictation.start(dictHotkey);
+      else await api.dictation.stop();
+      setDictStatus(await api.dictation.status());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setDictBusy(false);
     }
   }
+
+  // Hotkey capture: collect the chord, then commit on the first non-modifier.
+  useEffect(() => {
+    if (!capturingHotkey) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault();
+      const parts: string[] = [];
+      if (e.ctrlKey) parts.push("ctrl");
+      if (e.shiftKey) parts.push("shift");
+      if (e.altKey) parts.push("alt");
+      const key = e.key.toLowerCase();
+      if (["control", "shift", "alt", "meta"].includes(key)) return;
+      parts.push(key === " " ? "space" : key);
+      setDictHotkey(parts.join("+"));
+      setCapturingHotkey(false);
+      api.settings.update("dictation_hotkey", parts.join("+")).catch(() => {});
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [capturingHotkey]);
 
   async function saveHfToken() {
     setSaving(true);
@@ -187,311 +224,304 @@ export default function Settings() {
     }
   }
 
-  function flash(key: string) {
-    setSavedKey(key);
-    setTimeout(() => setSavedKey(null), 2000);
-  }
-
-  async function handleCheckForUpdates() {
-    setCheckingUpdate(true);
-    setUpdateMsg(null);
+  async function checkForUpdates() {
     try {
-      await invoke("open_external", { url: "https://github.com/moorew/winwhisper/releases" });
-      setUpdateMsg("Opening GitHub releases in your browser…");
+      await invoke("open_external", {
+        url: "https://github.com/moorew/winwhisper/releases",
+      });
+      setUpdateMsg("Opening the releases page in your browser…");
     } catch {
-      setUpdateMsg("Could not open browser. Visit github.com/moorew/winwhisper/releases manually.");
-    } finally {
-      setCheckingUpdate(false);
+      setUpdateMsg("Visit github.com/moorew/winwhisper/releases");
     }
   }
 
-  const downloadedModels = models.filter((m) => m.is_downloaded);
+  const downloaded = models.filter((m) => m.is_downloaded);
+  const modelsBytes = downloaded.reduce((s, m) => s + m.size_mb * 1024 * 1024, 0);
 
   return (
-    <TooltipProvider>
     <div className="flex h-full flex-col overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <SettingsIcon className="h-4 w-4 text-muted-foreground" />
-        <h1 className="text-base font-semibold">Settings</h1>
-      </div>
+      <PageHeader
+        title="Settings"
+        right={
+          <span className="tnum text-[12px] text-text-dim">
+            WinWhisper {version ?? "…"} · engine {version ?? "…"}
+          </span>
+        }
+      />
 
-      <ScrollArea className="flex-1">
-        <div className="max-w-2xl mx-auto p-6 space-y-8">
+      <div className="flex min-h-0 flex-1 gap-[22px] px-6 pb-6 pt-0.5">
+        {/* Section nav */}
+        <nav className="hidden w-[172px] flex-shrink-0 flex-col gap-0.5 lg:flex">
+          {SECTIONS.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() =>
+                document.getElementById(s.id)?.scrollIntoView({ behavior: "smooth", block: "start" })
+              }
+              className={cn(
+                "flex h-8 items-center rounded-segment px-2.5 text-left text-[12.5px] transition-colors duration-[120ms]",
+                active === s.id
+                  ? "bg-fill text-text-strong"
+                  : "text-text-muted hover:text-text-tertiary"
+              )}
+            >
+              {s.label}
+            </button>
+          ))}
+        </nav>
 
+        <div ref={scrollRef} className="flex min-w-0 flex-1 flex-col gap-[22px] overflow-y-auto pb-10">
           {error && (
-            <div className="flex items-start gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive">
-              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
-              <span>{error}</span>
+            <div className="rounded-card border border-danger/25 bg-danger/[0.08] px-4 py-3 text-[12.5px] text-danger">
+              {error}
             </div>
           )}
 
-          {/* Appearance */}
-          <section>
-            <h2 className="text-sm font-semibold mb-3">Appearance</h2>
-            <div className="flex items-center justify-between rounded-lg border border-border p-3">
-              <div>
-                <p className="text-sm font-medium">Theme</p>
-                <p className="text-xs text-muted-foreground">Choose light or dark mode</p>
-              </div>
-              <div className="flex rounded-lg bg-muted p-0.5">
-                {(["light", "dark"] as const).map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => setTheme(t)}
-                    className={cn(
-                      "rounded-md px-3 py-1.5 text-xs font-medium transition-colors capitalize",
-                      theme === t
-                        ? "bg-background text-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </section>
+          {/* ── Appearance ─────────────────────────────────────────── */}
+          <Group id="appearance" label="Appearance">
+            <Row
+              icon={<Moon size={16} strokeWidth={1.75} />}
+              title="Theme"
+              description="Follows your Windows setting unless you pick one"
+            >
+              <Segmented
+                size="sm"
+                value={theme}
+                onChange={(v) => setTheme(v)}
+                options={[
+                  { value: "system", label: "System" },
+                  { value: "light", label: "Light" },
+                  { value: "dark", label: "Dark" },
+                ]}
+              />
+            </Row>
+          </Group>
 
-          <Separator />
-
-          {/* Default Model */}
-          <section>
-            <h2 className="text-sm font-semibold mb-1">Default Model</h2>
-            <p className="text-xs text-muted-foreground mb-3">
-              The model used when no model is specified for a transcription job.
-            </p>
-            {downloadedModels.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No models downloaded yet. Visit the Models page to download one.
-              </p>
-            ) : (
-              <div className="space-y-1.5">
-                {downloadedModels.map((m) => (
-                  <label key={m.name} className="flex items-center justify-between rounded-lg border border-border p-3 cursor-pointer hover:bg-accent/30 transition-colors">
-                    <div>
-                      <p className="text-sm font-medium">{m.name}</p>
-                      <p className="text-xs text-muted-foreground">{m.description} · {m.speed}</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {activeModel === m.name && savedKey === "model" && (
-                        <Check className="h-4 w-4 text-green-500" />
-                      )}
-                      <input
-                        type="radio"
-                        name="active_model"
-                        value={m.name}
-                        checked={activeModel === m.name}
-                        onChange={() => handleActivateModel(m.name)}
-                        className="accent-primary"
-                      />
-                    </div>
-                  </label>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <Separator />
-
-          {/* Watch Folder */}
-          <section>
-            <div className="flex items-center justify-between mb-1">
-              <h2 className="text-sm font-semibold">Watch Folder</h2>
-              {watchBusy && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-            </div>
-            <p className="text-xs text-muted-foreground mb-3">
-              Automatically transcribe audio/video files dropped into a folder.
-            </p>
-            <div className="space-y-3 rounded-lg border border-border p-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium">Enable watch folder</p>
-                <Toggle
-                  checked={watchStatus?.running ?? false}
-                  onChange={handleWatchToggle}
-                />
-              </div>
-
-              <div className="space-y-2">
+          {/* ── Transcription ──────────────────────────────────────── */}
+          <Group id="transcription" label="Transcription defaults">
+            <Row title="Default model" description="Used when a job doesn't name one">
+              {downloaded.length ? (
                 <div className="flex items-center gap-2">
-                  <Folder className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                  <Input
+                  {savedKey === "model" && (
+                    <Check size={14} strokeWidth={1.75} className="text-accent-ink" />
+                  )}
+                  <Select
+                    label=""
+                    value={activeModel}
+                    onChange={handleActivateModel}
+                    minWidth={132}
+                    disabled={saving}
+                    options={downloaded.map((m) => ({ value: m.name, label: m.name }))}
+                  />
+                </div>
+              ) : (
+                <span className="text-meta text-text-dim">No models downloaded</span>
+              )}
+            </Row>
+            <Row
+              title="Speaker diarization"
+              description={
+                <>
+                  Needs a free HuggingFace token ·{" "}
+                  <a href="https://huggingface.co/pyannote/speaker-diarization-3.1" target="_blank" rel="noreferrer">
+                    setup guide
+                  </a>
+                </>
+              }
+            >
+              <Toggle checked={diarize} onChange={handleDiarize} label="" />
+            </Row>
+            <Row title="HuggingFace token" description="Stored locally, never sent anywhere else">
+              <div className="flex items-center gap-2">
+                <input
+                  type="password"
+                  value={hfToken}
+                  onChange={(e) => setHfToken(e.target.value)}
+                  placeholder="hf_…"
+                  className="h-[34px] w-[200px] rounded-control border border-stroke-strong bg-input px-3 font-mono text-[12.5px] text-text-secondary outline-none placeholder:text-text-dim"
+                />
+                <SecondaryButton onClick={saveHfToken} disabled={saving}>
+                  {saving ? (
+                    <Loader size={14} strokeWidth={1.75} className="animate-spin" />
+                  ) : savedKey === "hfToken" ? (
+                    <Check size={14} strokeWidth={1.75} className="text-accent-ink" />
+                  ) : (
+                    <Save size={14} strokeWidth={1.75} />
+                  )}
+                </SecondaryButton>
+              </div>
+            </Row>
+            <Row title="Auto-export on finish" description="Write these alongside every finished transcript">
+              <div className="flex flex-wrap gap-1.5">
+                {EXPORT_FORMATS.map((f) => {
+                  const on = autoExport.includes(f);
+                  return (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => toggleExportFormat(f)}
+                      className={cn(
+                        "h-7 rounded-chip border px-2.5 text-meta transition-colors duration-[120ms]",
+                        on
+                          ? "border-accent-ink/[0.24] bg-accent-ink/[0.14] text-accent-badge"
+                          : "border-stroke-strong bg-fill-subtle text-text-dim hover:text-text-tertiary"
+                      )}
+                    >
+                      {f}
+                    </button>
+                  );
+                })}
+              </div>
+            </Row>
+          </Group>
+
+          {/* ── Automation ─────────────────────────────────────────── */}
+          <Group id="automation" label="Automation">
+            <Row
+              icon={<Folder size={16} strokeWidth={1.75} />}
+              title="Watch folder"
+              description="Files dropped here are transcribed automatically"
+            >
+              <div className="flex items-center gap-2">
+                <div className="flex h-[34px] w-[268px] items-center gap-2 rounded-control border border-stroke-strong bg-input px-3">
+                  <input
                     value={watchPath}
                     onChange={(e) => setWatchPath(e.target.value)}
-                    placeholder="C:\Users\you\Watch"
                     disabled={watchStatus?.running}
-                    className="text-sm"
+                    placeholder="C:\Users\you\Recordings"
+                    className="min-w-0 flex-1 bg-transparent text-[12.5px] text-text-secondary outline-none placeholder:text-text-dim disabled:opacity-50"
                   />
+                  <FolderOpen size={14} strokeWidth={1.75} className="flex-shrink-0 text-text-dim" />
                 </div>
-                <div className="flex items-center justify-between">
-                  <label className="text-xs text-muted-foreground">Model</label>
-                  <select
-                    value={watchModel}
-                    onChange={(e) => setWatchModel(e.target.value)}
-                    disabled={watchStatus?.running}
-                    className="rounded border border-input bg-background px-2 py-1 text-xs text-foreground disabled:opacity-50"
-                  >
-                    {(downloadedModels.length > 0 ? downloadedModels : models).map((m) => (
-                      <option key={m.name} value={m.name}>{m.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={watchDiarize}
-                    onChange={(e) => setWatchDiarize(e.target.checked)}
-                    disabled={watchStatus?.running}
-                    className="accent-primary"
-                  />
-                  <span className="text-xs text-muted-foreground">Speaker diarization</span>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Info className="h-3 w-3 text-muted-foreground/60 cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      Labels each line with who is speaking. Requires a HuggingFace token below.
-                    </TooltipContent>
-                  </Tooltip>
-                </label>
-              </div>
-            </div>
-          </section>
-
-          <Separator />
-
-          {/* Dictation */}
-          <section>
-            <div className="flex items-center justify-between mb-1">
-              <h2 className="text-sm font-semibold">Global Dictation</h2>
-              {dictBusy && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-            </div>
-            <p className="text-xs text-muted-foreground mb-3">
-              Hold the hotkey to record; release to transcribe and type into the focused window.
-              Requires a model to be loaded (run any transcription first).
-            </p>
-            <div className="space-y-3 rounded-lg border border-border p-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium">Enable dictation</p>
-                <Toggle
-                  checked={dictStatus?.active ?? false}
-                  onChange={handleDictToggle}
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <Keyboard className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                <Input
-                  value={dictHotkey}
-                  onChange={(e) => setDictHotkey(e.target.value)}
-                  placeholder="ctrl+shift+space"
-                  disabled={dictStatus?.active}
-                  className="text-sm font-mono"
-                />
-              </div>
-            </div>
-          </section>
-
-          <Separator />
-
-          {/* HuggingFace Token */}
-          <section>
-            <div className="flex items-center gap-2 mb-1">
-              <h2 className="text-sm font-semibold">HuggingFace Token</h2>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent>
-                  HuggingFace hosts the speaker diarization model (pyannote.audio). The model is
-                  gated — you need a free account and must accept its license before WinWhisper
-                  can download it. Your token is stored locally and never sent anywhere else.
-                </TooltipContent>
-              </Tooltip>
-            </div>
-            <p className="text-xs text-muted-foreground mb-3">
-              Required for speaker diarization. Get your token at huggingface.co/settings/tokens,
-              then accept the license at pyannote/speaker-diarization-3.1.
-            </p>
-            <div className="flex gap-2">
-              <Input
-                type="password"
-                value={hfToken}
-                onChange={(e) => setHfToken(e.target.value)}
-                placeholder="hf_…"
-                className="flex-1 font-mono text-sm"
-              />
-              <Button onClick={saveHfToken} disabled={saving} variant="outline" size="sm">
-                {saving ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : savedKey === "hfToken" ? (
-                  <Check className="h-4 w-4 text-green-500" />
+                {watchBusy ? (
+                  <Loader size={16} strokeWidth={1.75} className="animate-spin text-text-dim" />
                 ) : (
-                  <Save className="h-4 w-4" />
+                  <Toggle
+                    checked={watchStatus?.running ?? false}
+                    onChange={handleWatchToggle}
+                    label=""
+                  />
                 )}
-              </Button>
-            </div>
-          </section>
-
-          <Separator />
-
-          {/* Processing hardware */}
-          <section>
-            <h2 className="text-sm font-semibold mb-1">Processing</h2>
-            <p className="text-xs text-muted-foreground mb-3">
-              Where transcription runs. A GPU is used when one is available and
-              working; otherwise WinWhisper falls back to the CPU automatically —
-              slower, but everything still works.
-            </p>
-            <div className="rounded-lg border border-border p-3 space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="text-sm">Device</span>
-                <span className="text-sm font-medium">
-                  {hardware
-                    ? hardware.recommended_device === "cuda"
-                      ? `GPU — ${hardware.gpu_name ?? "NVIDIA"}`
-                      : "CPU"
-                    : "…"}
-                </span>
               </div>
-              {hardware?.recommended_device !== "cuda" && hardware && (
-                <p className="text-xs text-muted-foreground">
-                  No usable NVIDIA GPU was detected. Larger models will be slow —
-                  <strong> base</strong> or <strong>small</strong> are good choices on CPU.
-                </p>
-              )}
+            </Row>
+            <Row
+              icon={<Keyboard size={16} strokeWidth={1.75} />}
+              title="Global dictation"
+              description="Hold the hotkey, speak, release — text lands in the focused window"
+            >
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCapturingHotkey(true)}
+                  aria-label="Change dictation hotkey"
+                  className="flex items-center gap-1"
+                >
+                  {capturingHotkey ? (
+                    <span className="flex h-7 items-center rounded-chip border border-accent-ink/40 bg-input px-2.5 text-meta text-accent-ink">
+                      Press keys…
+                    </span>
+                  ) : (
+                    dictHotkey.split("+").map((k) => (
+                      <kbd
+                        key={k}
+                        className="flex h-7 min-w-[34px] items-center justify-center rounded-chip border border-stroke-strong bg-input px-1.5 text-meta text-text-secondary"
+                      >
+                        {k}
+                      </kbd>
+                    ))
+                  )}
+                </button>
+                {dictBusy ? (
+                  <Loader size={16} strokeWidth={1.75} className="animate-spin text-text-dim" />
+                ) : (
+                  <Toggle
+                    checked={dictStatus?.active ?? false}
+                    onChange={handleDictToggle}
+                    label=""
+                  />
+                )}
+              </div>
+            </Row>
+          </Group>
+
+          {/* ── Storage ────────────────────────────────────────────── */}
+          <Group id="storage" label="Storage">
+            <div className="px-4 py-[14px]">
+              <p className="text-title font-medium text-text-strong">
+                {formatFileSize(modelsBytes)} used by models
+              </p>
+              <div className="mt-2.5 flex h-1.5 overflow-hidden rounded-[3px] bg-track">
+                <span className="h-full bg-accent-ink" style={{ width: "100%" }} />
+              </div>
+              <div className="mt-2 flex gap-4 text-meta text-text-dim">
+                <span>Models {formatFileSize(modelsBytes)}</span>
+                <span>{downloaded.length} installed</span>
+              </div>
             </div>
-          </section>
+          </Group>
 
-          <Separator />
-
-          {/* Updates */}
-          <section>
-            <h2 className="text-sm font-semibold mb-1">Updates</h2>
-            <p className="text-xs text-muted-foreground mb-3">
-              Current version: <span className="font-mono">{version ?? "…"}</span>
-            </p>
-            <div className="flex items-center gap-3">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleCheckForUpdates}
-                disabled={checkingUpdate}
-              >
-                {checkingUpdate
-                  ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                  : <ExternalLink className="mr-2 h-3.5 w-3.5" />
-                }
-                Check for Updates
-              </Button>
-            </div>
-            {updateMsg && (
-              <p className="text-xs text-muted-foreground mt-2">{updateMsg}</p>
-            )}
-          </section>
-
+          {/* ── About ──────────────────────────────────────────────── */}
+          <Group id="about" label="About">
+            <Row title="Version" description="WinWhisper is free and open source, MIT licensed">
+              <span className="tnum text-[12.5px] text-text-secondary">{version ?? "…"}</span>
+            </Row>
+            <Row title="Updates" description="Releases are published on GitHub">
+              <div className="flex flex-col items-end gap-1">
+                <SecondaryButton onClick={checkForUpdates}>
+                  <ExternalLink size={14} strokeWidth={1.75} />
+                  Check for updates
+                </SecondaryButton>
+                {updateMsg && <span className="text-meta text-text-dim">{updateMsg}</span>}
+              </div>
+            </Row>
+          </Group>
         </div>
-      </ScrollArea>
+      </div>
     </div>
-    </TooltipProvider>
+  );
+}
+
+function Group({
+  id,
+  label,
+  children,
+}: {
+  id: string;
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <section id={id} className="flex scroll-mt-4 flex-col gap-3">
+      <SectionLabel>{label}</SectionLabel>
+      <Card className="overflow-hidden">{children}</Card>
+    </section>
+  );
+}
+
+function Row({
+  icon,
+  title,
+  description,
+  children,
+}: {
+  icon?: ReactNode;
+  title: string;
+  description?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-[14px] border-t border-hairline px-4 py-[14px] first:border-t-0">
+      {icon && (
+        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-tile bg-fill text-text-muted">
+          {icon}
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="text-title font-medium text-text-strong">{title}</p>
+        {description && <p className="mt-0.5 text-meta text-text-dim">{description}</p>}
+      </div>
+      <div className="flex-shrink-0">{children}</div>
+    </div>
   );
 }

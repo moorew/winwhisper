@@ -3,5 +3,12 @@
   "identifier": "default",
   "description": "Core permissions for the main window. Without a capability file at all, Tauri 2 denies every core plugin command — including event.listen, which is how the frontend receives tauri://drag-drop and the engine-ready signal.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-is-maximized"
+  ]
 }

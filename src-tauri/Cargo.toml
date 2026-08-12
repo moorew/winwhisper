@@ -1,6 +1,6 @@
 [package]
 name = "winwhisper"
-version = "0.3.3"
+version = "0.4.0"
 description = "WinWhisper — Premium Windows Transcription App"
 authors = []
 edition = "2021"
@@ -23,6 +23,11 @@ serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 tokio        = { version = "1", features = ["net", "time", "rt", "process", "io-util"] }
 zip          = { version = "2", default-features = false, features = ["deflate"] }
+
+# Mica behind the custom titlebar and rail on Windows 11. The chrome gradient
+# in globals.css is the fallback wherever it cannot be applied.
+[target.'cfg(windows)'.dependencies]
+window-vibrancy = "0.5"
 
 [profile.dev]
 incremental = true

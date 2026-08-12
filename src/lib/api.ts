@@ -80,6 +80,9 @@ export interface ModelInfo {
   is_active: boolean;
   is_downloading: boolean;
   download_progress: number | null;
+  /** Actual bytes on disk once downloaded; null for models not installed. */
+  size_bytes_local: number | null;
+  compute_type: string | null;
 }
 
 export interface DictationStatus {
