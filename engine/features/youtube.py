@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -9,6 +10,10 @@ try:
     _YT_DLP_AVAILABLE = True
 except ImportError:
     _YT_DLP_AVAILABLE = False
+
+
+# No bytes for this long during a download means it is not coming back.
+STALL_SECONDS = 90
 
 
 class _YtdlLogger:
@@ -75,10 +80,12 @@ class YouTubeExtractor:
         url: str,
         output_dir: str,
         on_progress: Optional[Callable[[float], None]] = None,
+        on_detail: Optional[Callable[[str], None]] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Downloads the best available audio from url into output_dir.
-        Calls on_progress(0.0–1.0) during the download phase.
+        Calls on_progress(0.0–1.0) and on_detail("12.4 MB of 38.1 MB · 2.1 MB/s")
+        during the download phase.
         Returns (absolute_file_path, metadata_dict).
         """
         _check_available()
@@ -86,17 +93,59 @@ class YouTubeExtractor:
         # Unique prefix so parallel downloads never collide
         prefix = uuid.uuid4().hex[:8]
 
+        # If nothing arrives for this long the connection is dead in all but
+        # name — YouTube throttles hard when yt-dlp has no JS runtime to solve
+        # its challenge with, and a trickle keeps the socket timeout from ever
+        # firing. Better to fail with a reason than block the worker forever.
+        stall_limit = STALL_SECONDS
+        progress_state = {"bytes": 0, "changed": time.monotonic(), "logged": 0.0}
+
         def _hook(d: dict) -> None:
-            if on_progress is None:
-                return
             status = d.get("status")
-            if status == "downloading":
-                total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
-                downloaded = d.get("downloaded_bytes", 0)
-                if total and total > 0:
-                    on_progress(min(downloaded / total, 0.99))
-            elif status == "finished":
-                on_progress(1.0)
+            if status == "finished":
+                if on_progress:
+                    on_progress(1.0)
+                return
+            if status != "downloading":
+                return
+
+            downloaded = d.get("downloaded_bytes") or 0
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            speed = d.get("speed") or 0
+            now = time.monotonic()
+
+            if downloaded != progress_state["bytes"]:
+                progress_state["bytes"] = downloaded
+                progress_state["changed"] = now
+            elif now - progress_state["changed"] > stall_limit:
+                raise RuntimeError(
+                    f"YouTube download stalled — no data for {stall_limit}s "
+                    f"after {downloaded / 1048576:.1f} MB. The video may be "
+                    "rate-limited; try again or use a different video."
+                )
+
+            if on_progress and total > 0:
+                on_progress(min(downloaded / total, 0.99))
+
+            # Always report *something*: with the total unknown a percentage
+            # would sit at zero for the whole download, which is what made a
+            # working download look like a hang.
+            if on_detail:
+                parts = [f"{downloaded / 1048576:.1f} MB"]
+                if total:
+                    parts[0] += f" of {total / 1048576:.1f} MB"
+                if speed:
+                    parts.append(f"{speed / 1048576:.1f} MB/s")
+                on_detail(" · ".join(parts))
+
+            if now - progress_state["logged"] > 5:
+                progress_state["logged"] = now
+                print(
+                    f"[WinWhisper] YouTube: {downloaded / 1048576:.1f} MB"
+                    + (f" of {total / 1048576:.1f} MB" if total else "")
+                    + (f" at {speed / 1048576:.2f} MB/s" if speed else ""),
+                    flush=True,
+                )
 
         ydl_opts = {
             # Prefer m4a (AAC) or webm; both are natively readable by ffmpeg/faster-whisper
@@ -127,6 +176,17 @@ class YouTubeExtractor:
             # it write to stdout/stderr directly — the shell reads stdout to
             # discover the engine port, and a bundled app has no real console.
             "logger": _YtdlLogger(),
+            # We do not ship ffmpeg, so container fixups cannot run. Whisper
+            # reads the raw stream perfectly well; attempting the fixup only
+            # produces a warning and, for some formats, a hard failure.
+            "fixup": "never",
+            # Player clients that do not need a JavaScript runtime. Without
+            # this yt-dlp works through the JS-dependent clients first, which
+            # on a machine with no runtime means slow fallbacks and throttled
+            # transfers.
+            # ios is omitted deliberately: it needs a PO token we cannot supply and only
+            # produces a warning before being skipped.
+            "extractor_args": {"youtube": {"player_client": ["android_vr", "web"]}},
         }
 
         print(f"[WinWhisper] YouTube: downloading audio for {url}", flush=True)

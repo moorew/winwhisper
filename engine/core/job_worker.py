@@ -20,6 +20,10 @@ from core.transcriber import TranscriptionCancelled, transcriber
 # a DB write on every segment.
 _live_progress: Dict[str, float] = {}
 
+# Ceiling on the YouTube download phase. Generous enough for a long video on a
+# slow connection, but bounded — the worker is single-threaded.
+YOUTUBE_TIMEOUT_SECONDS = 30 * 60
+
 # Jobs the user has asked to abandon. Setting the DB status alone is not enough:
 # the worker would carry on transcribing and then overwrite the row with "done".
 _cancel_requested: Set[str] = set()
@@ -47,9 +51,10 @@ def get_live_text(job_id: str) -> Optional[str]:
     return _live_text.get(job_id)
 
 
-def _set_stage(job_id: str, stage: str) -> None:
+def _set_stage(job_id: str, stage: str, log: bool = True) -> None:
     _live_stage[job_id] = stage
-    print(f"[WinWhisper] job {job_id[:8]}: {stage}", flush=True)
+    if log:
+        print(f"[WinWhisper] job {job_id[:8]}: {stage}", flush=True)
 
 
 def request_cancel(job_id: str) -> None:
@@ -223,12 +228,31 @@ async def _download_youtube(
     def _yt_progress(p: float) -> None:
         _live_progress[job_id] = p * 0.25
 
-    file_path, metadata = await asyncio.to_thread(
-        extractor.extract_audio,
-        url,
-        str(storage.temp_dir),
-        _yt_progress,
-    )
+    def _yt_detail(detail: str) -> None:
+        # Not logged on every callback — the extractor already logs a summary
+        # every few seconds.
+        _set_stage(job_id, f"Downloading from YouTube — {detail}", log=False)
+
+    try:
+        file_path, metadata = await asyncio.wait_for(
+            asyncio.to_thread(
+                extractor.extract_audio,
+                url,
+                str(storage.temp_dir),
+                _yt_progress,
+                _yt_detail,
+            ),
+            timeout=YOUTUBE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        # The worker handles one job at a time, so a download that never
+        # returns would block every job queued behind it — which is how a
+        # single bad video appeared to break transcription entirely.
+        raise TimeoutError(
+            f"YouTube download exceeded {YOUTUBE_TIMEOUT_SECONDS // 60} minutes "
+            "and was abandoned. The video may be very long or rate-limited."
+        ) from None
+
     return file_path, metadata.get("title", url)
 
 

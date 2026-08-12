@@ -1,5 +1,5 @@
-import { ReactNode } from "react";
-import { ChevronDown } from "lucide-react";
+import { ReactNode, useEffect, useRef, useState } from "react";
+import { Check, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /* Shared building blocks for the overhauled pages, so the token values in the
@@ -151,7 +151,14 @@ export function Toggle({
   );
 }
 
-/** h34 select styled as the design's control — label left, value + chevron right. */
+/**
+ * h34 select — label left, value + chevron right.
+ *
+ * Deliberately not a native <select>. The popup a native select opens is drawn
+ * by the platform, takes almost none of our styling, and in WebView2 came out
+ * as unreadable default-on-dark. This renders its own menu so the list matches
+ * the rest of the app.
+ */
 export function Select({
   label,
   value,
@@ -167,32 +174,82 @@ export function Select({
   minWidth?: number;
   disabled?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const current = options.find((o) => o.value === value);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
   return (
-    <div
-      className={cn(
-        "relative flex h-[34px] items-center gap-2 rounded-control border border-stroke-strong bg-input px-3",
-        disabled && "opacity-40"
-      )}
-      style={{ minWidth }}
-    >
-      <span className="flex-shrink-0 text-[12px] text-text-dim">{label}</span>
-      <span className="ml-auto truncate text-[12.5px] text-text-secondary">
-        {options.find((o) => o.value === value)?.label ?? value}
-      </span>
-      <ChevronDown size={13} strokeWidth={1.75} className="flex-shrink-0 text-text-dim" />
-      <select
-        aria-label={label}
-        value={value}
+    <div ref={ref} className="relative" style={{ minWidth }}>
+      <button
+        type="button"
+        role="combobox"
+        aria-expanded={open}
+        aria-label={label || undefined}
         disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-        className="absolute inset-0 cursor-pointer opacity-0"
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "flex h-[34px] w-full items-center gap-2 rounded-control border border-stroke-strong bg-input px-3 transition-colors duration-[120ms]",
+          disabled ? "opacity-40" : "hover:border-stroke-strong hover:bg-fill-subtle"
+        )}
       >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
+        {label && <span className="flex-shrink-0 text-[12px] text-text-dim">{label}</span>}
+        <span className="ml-auto truncate text-[12.5px] text-text-secondary">
+          {current?.label ?? value}
+        </span>
+        <ChevronDown
+          size={13}
+          strokeWidth={1.75}
+          className={cn(
+            "flex-shrink-0 text-text-dim transition-transform duration-[120ms]",
+            open && "rotate-180"
+          )}
+        />
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          className="absolute left-0 right-0 top-[38px] z-40 max-h-64 overflow-y-auto rounded-control border border-stroke-strong bg-card py-1 shadow-modal"
+        >
+          {options.map((o) => {
+            const selected = o.value === value;
+            return (
+              <button
+                key={o.value}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onClick={() => { onChange(o.value); setOpen(false); }}
+                className={cn(
+                  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] transition-colors duration-[120ms]",
+                  selected
+                    ? "bg-fill text-text-strong"
+                    : "text-text-secondary hover:bg-fill-subtle"
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                {selected && (
+                  <Check size={13} strokeWidth={1.75} className="flex-shrink-0 text-accent-ink" />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
