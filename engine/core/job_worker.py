@@ -28,6 +28,11 @@ _cancel_requested: Set[str] = set()
 # indistinguishable from a hung job — the bar just sits still.
 _live_stage: Dict[str, str] = {}
 
+# Tail of the transcript as it is produced, so the UI can show words appearing
+# instead of only a percentage. Bounded by the transcriber; dropped as soon as
+# the job leaves the worker, since the real transcript is then in the database.
+_live_text: Dict[str, str] = {}
+
 
 def get_live_progress(job_id: str) -> Optional[float]:
     return _live_progress.get(job_id)
@@ -35,6 +40,10 @@ def get_live_progress(job_id: str) -> Optional[float]:
 
 def get_live_stage(job_id: str) -> Optional[str]:
     return _live_stage.get(job_id)
+
+
+def get_live_text(job_id: str) -> Optional[str]:
+    return _live_text.get(job_id)
 
 
 def _set_stage(job_id: str, stage: str) -> None:
@@ -282,6 +291,7 @@ class JobWorker:
                 self._current_job_id = None
                 _live_progress.pop(job_id, None)
                 _live_stage.pop(job_id, None)
+                _live_text.pop(job_id, None)
                 _cancel_requested.discard(job_id)
                 self._queue.task_done()
 
@@ -329,6 +339,9 @@ class JobWorker:
         prog_base = 0.25 if is_yt else 0.0
         prog_scale = 0.75 if is_yt else 1.0
 
+        def _on_partial(text: str) -> None:
+            _live_text[job_id] = text
+
         def _on_progress(p: float) -> None:
             # Transcription fills from prog_base up to 0.95 of total
             _live_progress[job_id] = prog_base + p * prog_scale * 0.95
@@ -345,6 +358,7 @@ class JobWorker:
                 vad_filter=opts.get("vad_filter", True),
                 word_timestamps=opts.get("word_timestamps", True),
                 should_continue=lambda: not is_cancel_requested(job_id),
+                on_partial=_on_partial,
             )
         except TranscriptionCancelled:
             # Don't leave the user's temp upload behind just because they

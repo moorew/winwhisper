@@ -25,6 +25,7 @@ If you're on macOS, go buy MacWhisper — Jordi has done fantastic work and dese
 - **Global dictation hotkey** — hold a key to record, release to type
 - **Microphone recording** — record straight from the dashboard
 - **Waveform playback** — scrub the audio and click any line to jump to it
+- **Live preview** — watch the transcript appear while the job runs
 - **Export** — TXT, SRT, VTT, JSON, plus batch export of several transcripts
 - **Dark/light mode**
 

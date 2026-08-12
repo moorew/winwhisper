@@ -788,6 +788,7 @@ export default function Dashboard() {
                             {formatElapsed(job.created_at, now)}
                           </span>
                         </div>
+                        {job.partial_text && <LivePreview text={job.partial_text} />}
                       </>
                     )}
                     {job.status === "failed" && (
@@ -877,6 +878,32 @@ export default function Dashboard() {
         </div>
       </div>
     </TooltipProvider>
+  );
+}
+
+/**
+ * Rolling preview of the transcript while it is still being produced.
+ *
+ * The engine sends only the tail, so the newest words are always at the end —
+ * the box is kept pinned to the bottom so they stay in view without the panel
+ * growing as the job runs.
+ */
+function LivePreview({ text }: { text: string }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = boxRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [text]);
+
+  return (
+    <div
+      ref={boxRef}
+      className="max-h-16 overflow-y-auto rounded bg-background/60 px-2 py-1.5 text-xs leading-relaxed text-muted-foreground"
+    >
+      {text}
+      <span className="ml-0.5 inline-block h-3 w-1 translate-y-0.5 animate-pulse bg-primary/70" />
+    </div>
   );
 }
 

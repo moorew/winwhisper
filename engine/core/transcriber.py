@@ -34,6 +34,11 @@ def _is_vad_runtime_error(exc: BaseException) -> bool:
     return any(marker in message for marker in _VAD_ERROR_MARKERS)
 
 
+# Bounds on the live preview handed to the UI while a job runs.
+PREVIEW_SEGMENTS = 25
+PREVIEW_CHARS = 1200
+
+
 class TranscriptionCancelled(Exception):
     """Raised when a caller asks to abandon an in-flight transcription."""
 
@@ -147,6 +152,7 @@ class Transcriber:
         word_timestamps: bool = True,
         beam_size: int = 5,
         should_continue: Optional[Callable[[], bool]] = None,
+        on_partial: Optional[Callable[[str], None]] = None,
     ) -> Tuple[list, object]:
         """
         Transcribes audio_path and returns (segments_list, TranscriptionInfo).
@@ -177,6 +183,15 @@ class Transcriber:
                 segments.append(seg)
                 if on_progress and getattr(info, "duration", 0) and info.duration > 0:
                     on_progress(min(seg.end / info.duration, 0.99))
+                if on_partial is not None:
+                    # Only the tail: this is a preview, and shipping a whole
+                    # two-hour transcript on every poll would be wasteful.
+                    # Built from the last few segments so the cost per segment
+                    # stays flat rather than growing with the transcript.
+                    tail = " ".join(
+                        s.text.strip() for s in segments[-PREVIEW_SEGMENTS:]
+                    ).strip()
+                    on_partial(tail[-PREVIEW_CHARS:])
 
             return segments, info
 
