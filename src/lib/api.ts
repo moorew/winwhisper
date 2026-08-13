@@ -148,6 +148,9 @@ export const api = {
     get: (id: string) => request<JobResponse>(`/jobs/${id}`),
     cancel: (id: string) =>
       request<{ cancelled: boolean; job_id: string }>(`/jobs/${id}/cancel`, { method: "POST" }),
+    /** Runs a failed job again from its original file or link. */
+    retry: (id: string) =>
+      request<{ queued: boolean; job_id: string }>(`/jobs/${id}/retry`, { method: "POST" }),
     /** Removes the job row entirely — used to dismiss a failed job from the UI. */
     dismiss: (id: string) =>
       fetch(`${BASE_URL}/jobs/${id}`, { method: "DELETE" }),

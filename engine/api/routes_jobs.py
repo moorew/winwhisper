@@ -14,6 +14,7 @@ from core.job_worker import (
     get_live_stage,
     get_live_text,
     request_cancel,
+    worker,
 )
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -94,6 +95,40 @@ async def cancel_job(
     job.updated_at = datetime.utcnow()
     await session.commit()
     return {"cancelled": True, "job_id": job_id}
+
+
+@router.post("/{job_id}/retry", status_code=200)
+async def retry_job(
+    job_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """
+    Runs a finished-but-unsuccessful job again, from its original source.
+
+    Jobs interrupted by a shutdown are marked failed rather than restarted, so
+    that opening the app never begins work nobody asked for. That is only fair
+    if getting it going again is one click — otherwise the user has to find the
+    file or the link a second time.
+    """
+    job = await session.get(Job, job_id)
+    if not job:
+        raise HTTPException(404, "Job not found")
+    if job.status in ("queued", "processing"):
+        raise HTTPException(409, "Job is already running")
+    if not (job.source_url or job.source_path):
+        raise HTTPException(
+            409, "This job has no source left to run again — submit it afresh."
+        )
+
+    job.status = "queued"
+    job.progress = 0.0
+    job.error_message = None
+    job.transcript_id = None
+    job.updated_at = datetime.utcnow()
+    await session.commit()
+
+    await worker.enqueue(job_id)
+    return {"queued": True, "job_id": job_id}
 
 
 @router.delete("/{job_id}", status_code=204)

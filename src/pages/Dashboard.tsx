@@ -439,6 +439,18 @@ export default function Dashboard() {
     try { await api.jobs.dismiss(id); } catch { /* already gone */ }
   }, []);
 
+  const retryJob = useCallback(async (id: string) => {
+    setSubmitError(null);
+    try {
+      await api.jobs.retry(id);
+    } catch (e) {
+      // Most often the source is gone — an uploaded file lives in the cache and
+      // is cleared once its job ends. Say that rather than failing silently.
+      setSubmitError(e instanceof Error ? e.message : "Could not start that job again.");
+    }
+    pollJobs();
+  }, [pollJobs]);
+
   async function exportTranscript(t: TranscriptSummary) {
     try {
       const detail = await api.transcripts.get(t.id);
@@ -652,6 +664,7 @@ export default function Dashboard() {
             now={now}
             onCancel={() => cancelJob(job.id)}
             onDismiss={() => dismissJob(job.id)}
+            onRetry={() => retryJob(job.id)}
           />
         ))}
 
@@ -881,11 +894,13 @@ function JobCard({
   now,
   onCancel,
   onDismiss,
+  onRetry,
 }: {
   job: JobResponse;
   now: number;
   onCancel: () => void;
   onDismiss: () => void;
+  onRetry: () => void;
 }) {
   const failed = job.status === "failed";
   const percent = Math.round((job.progress ?? 0) * 100);
@@ -944,7 +959,21 @@ function JobCard({
       {!failed && <Track value={percent} />}
 
       {failed ? (
-        <p className="text-meta text-danger">{job.error_message ?? "Transcription failed."}</p>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <p className="text-meta text-danger">
+            {job.error_message ?? "Transcription failed."}
+          </p>
+          {/* Interrupted jobs are no longer restarted for you, so the way back
+              has to be here — otherwise the file or link has to be found twice. */}
+          <button
+            type="button"
+            onClick={onRetry}
+            className="flex items-center gap-1.5 text-meta font-medium text-text-tertiary transition-colors duration-[120ms] hover:text-text-strong"
+          >
+            <RefreshCw size={13} strokeWidth={1.75} />
+            Try again
+          </button>
+        </div>
       ) : (
         <p className="tnum text-meta text-text-dim">
           {/* The badge already names the phase — don't repeat it here. */}
