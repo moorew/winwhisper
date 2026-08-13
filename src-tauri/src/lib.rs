@@ -568,6 +568,35 @@ fn spawn_engine(handle: AppHandle) {
     });
 }
 
+/// Reads one newline-terminated line from the engine, decoding leniently.
+///
+/// Deliberately not `AsyncBufReadExt::lines()`. That yields `Err(InvalidData)`
+/// the moment the child writes a byte that is not valid UTF-8, and every drain
+/// here was written as `while let Ok(Some(line))` — which treats an error as
+/// end of stream. So one mis-encoded character killed the drain permanently.
+///
+/// That is not a cosmetic loss. Nothing else reads the pipe, so it fills, and
+/// the next `print()` in the engine blocks until someone empties it — which
+/// never happens. The engine wedges mid-job with no error, and the stall
+/// watchdog cannot report it either, because its own output goes down the same
+/// blocked pipe. It looked exactly like a hung transcription.
+///
+/// Reading bytes and replacing whatever does not decode keeps the pipe moving
+/// no matter what the child emits, in any code page.
+async fn read_line_lossy<R>(reader: &mut BufReader<R>) -> std::io::Result<Option<String>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut buf = Vec::new();
+    if reader.read_until(b'\n', &mut buf).await? == 0 {
+        return Ok(None); // genuine EOF: the child closed the pipe
+    }
+    while matches!(buf.last(), Some(b'\n') | Some(b'\r')) {
+        buf.pop();
+    }
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+}
+
 fn spawn_engine_child(command: &EngineCommand) -> std::io::Result<tokio::process::Child> {
     let mut cmd = tokio::process::Command::new(&command.program);
     cmd.args(&command.args)
@@ -599,8 +628,8 @@ async fn run_engine_child(
     // can share the actual import / runtime error when something breaks.
     if let Some(stderr) = child.stderr.take() {
         tauri::async_runtime::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
+            let mut reader = BufReader::new(stderr);
+            while let Ok(Some(line)) = read_line_lossy(&mut reader).await {
                 log_line(&format!("[engine!] {line}"));
             }
         });
@@ -611,7 +640,7 @@ async fn run_engine_child(
         log_line("[WinWhisper] engine stdout pipe was not captured");
         return false;
     };
-    let mut lines = BufReader::new(stdout).lines();
+    let mut reader = BufReader::new(stdout);
     let mut port: Option<u16> = None;
 
     // Bounded wait for the announcement: an engine that hangs without printing
@@ -627,7 +656,7 @@ async fn run_engine_child(
             ));
             break;
         }
-        match tokio::time::timeout(remaining, lines.next_line()).await {
+        match tokio::time::timeout(remaining, read_line_lossy(&mut reader)).await {
             Ok(Ok(Some(line))) => {
                 if let Some(rest) = line.trim().strip_prefix("WINWHISPER_PORT=") {
                     if let Ok(p) = rest.trim().parse::<u16>() {
@@ -655,8 +684,10 @@ async fn run_engine_child(
     };
 
     // Keep draining stdout after the port announcement so the pipe never fills.
+    // This is not optional bookkeeping: a pipe nobody reads fills, and the next
+    // print() on the other side blocks until someone does.
     tauri::async_runtime::spawn(async move {
-        while let Ok(Some(line)) = lines.next_line().await {
+        while let Ok(Some(line)) = read_line_lossy(&mut reader).await {
             log_line(&format!("[engine] {line}"));
         }
     });

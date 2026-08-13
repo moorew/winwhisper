@@ -158,3 +158,38 @@ def test_repeated_dumps_back_off(monkeypatch):
     marker = "has not reported progress"
     assert first.count(marker) == 1
     assert buffer.getvalue().count(marker) == 1
+
+
+# ── Output encoding ──────────────────────────────────────────────────────────
+
+def test_engine_output_is_pinned_to_utf8():
+    """
+    The shell reads stdout and mirrors it into engine.log. It used to stop
+    draining the moment a byte failed to decode as UTF-8, at which point the
+    pipe filled and the engine blocked forever on its next print() — mid-job,
+    with no error, and with the stall watchdog silenced because its own output
+    went down the same pipe. A YouTube job died on the first em dash it tried
+    to log.
+    """
+    import sys
+
+    from main import _force_utf8_output
+
+    _force_utf8_output()
+    for stream in (sys.stdout, sys.stderr):
+        encoding = getattr(stream, "encoding", "")
+        if encoding:  # pytest may swap in a stream without one
+            assert encoding.lower().replace("-", "") == "utf8"
+
+
+def test_the_lines_we_log_survive_a_round_trip():
+    """Every non-ASCII character the engine prints has to encode cleanly."""
+    from core.watchdog import _elapsed
+
+    lines = [
+        "[WinWhisper] YouTube: downloaded 8.8 MB (573s of audio) — handing to the transcriber",
+        "[WinWhisper] job abc12345: Decoding audio · base",
+        f"[WinWhisper] STALL: quiet for {_elapsed(190)}",
+    ]
+    for line in lines:
+        assert line.encode("utf-8").decode("utf-8") == line

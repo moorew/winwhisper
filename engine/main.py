@@ -2,10 +2,37 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
+
+
+def _force_utf8_output() -> None:
+    """
+    Pins stdout and stderr to UTF-8 before anything is written to them.
+
+    The shell reads both pipes and mirrors them into engine.log. It sets
+    PYTHONIOENCODING when spawning us, but that is an environment variable
+    reaching a frozen bootloader, and on Windows the fallback when it does not
+    take is the console code page — where an em dash is a single byte that is
+    not valid UTF-8 on the reading end.
+
+    Getting this wrong is not a display problem. The reader used to treat a
+    decode error as end of stream and stop draining; the pipe then filled and
+    the engine blocked forever on its next print(), mid-job, with no error
+    anywhere. errors="replace" means a character we cannot encode costs a
+    question mark rather than the whole process.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass  # not a reconfigurable text stream; nothing to do
+
+
+_force_utf8_output()
 
 import uvicorn
 from fastapi import FastAPI
