@@ -687,8 +687,24 @@ async fn run_engine_child(
     // This is not optional bookkeeping: a pipe nobody reads fills, and the next
     // print() on the other side blocks until someone does.
     tauri::async_runtime::spawn(async move {
-        while let Ok(Some(line)) = read_line_lossy(&mut reader).await {
-            log_line(&format!("[engine] {line}"));
+        loop {
+            match read_line_lossy(&mut reader).await {
+                Ok(Some(line)) => log_line(&format!("[engine] {line}")),
+                // Normal: the engine exited and closed its end.
+                Ok(None) => break,
+                // Anything else means we have stopped reading a pipe the engine
+                // is still writing to, which will wedge it at the next print().
+                // Silence here is what made the last one so hard to find, so
+                // say so — even though nothing can be done about it from a
+                // task that is already failing.
+                Err(e) => {
+                    log_line(&format!(
+                        "[WinWhisper] stdout drain stopped ({e}) — the engine will \
+                         block once the pipe fills. Restart the app."
+                    ));
+                    break;
+                }
+            }
         }
     });
 
