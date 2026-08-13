@@ -1,16 +1,18 @@
 import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
   Check,
+  Cpu,
   ExternalLink,
   Folder,
   FolderOpen,
   Keyboard,
   Loader,
   Moon,
+  Power,
   Save,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { api, DictationStatus, ModelInfo, WatchFolderStatus } from "@/lib/api";
+import { api, DevicesResponse, DictationStatus, ModelInfo, WatchFolderStatus } from "@/lib/api";
 import {
   Card,
   Hint,
@@ -29,6 +31,7 @@ const SECTIONS = [
   { id: "appearance", label: "Appearance" },
   { id: "transcription", label: "Transcription" },
   { id: "automation", label: "Automation" },
+  { id: "devices", label: "Devices" },
   { id: "storage", label: "Storage" },
   { id: "about", label: "About" },
 ] as const;
@@ -56,6 +59,11 @@ export default function Settings() {
   const [activeModel, setActiveModel] = useState("base");
   const [diarize, setDiarize] = useState(false);
   const [autoExport, setAutoExport] = useState<string[]>([]);
+
+  // Devices + sharing
+  const [devices, setDevices] = useState<DevicesResponse | null>(null);
+  const [sharing, setSharing] = useState(false);
+  const [startAtLogin, setStartAtLogin] = useState(false);
 
   const [watchStatus, setWatchStatus] = useState<WatchFolderStatus | null>(null);
   const [watchPath, setWatchPath] = useState("");
@@ -110,6 +118,40 @@ export default function Settings() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    api.devices()
+      .then((d) => {
+        setDevices(d);
+        setSharing(d.sharing);
+      })
+      .catch(() => {});
+    invoke<boolean>("get_start_at_login")
+      .then(setStartAtLogin)
+      .catch(() => {});   // not running under Tauri
+  }, []);
+
+  async function handleSharing(next: boolean) {
+    setSharing(next);
+    try {
+      await api.settings.update("share_engine", next);
+      setSavedKey("sharing");
+      setTimeout(() => setSavedKey(null), 1600);
+    } catch (e) {
+      setSharing(!next);
+      setError(e instanceof Error ? e.message : "Could not change sharing.");
+    }
+  }
+
+  async function handleStartAtLogin(next: boolean) {
+    setStartAtLogin(next);
+    try {
+      await invoke("set_start_at_login", { enabled: next });
+    } catch (e) {
+      setStartAtLogin(!next);
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
   useEffect(() => { applyTheme(theme); }, [theme]);
 
   // Follows the OS while the choice is System.
@@ -463,6 +505,100 @@ export default function Settings() {
           </Group>
 
           {/* ── Automation ─────────────────────────────────────────── */}
+          {/* ── Devices ────────────────────────────────────────────── */}
+          <Group id="devices" label="Your devices">
+            <Row
+              icon={<Cpu size={16} strokeWidth={1.75} />}
+              title="Share this machine's engine"
+              description={
+                devices?.tailscale_available === false
+                  ? "Needs Tailscale running and signed in on this machine"
+                  : sharing
+                  ? `Offering ${devices?.this_device ?? "this machine"} to your other devices`
+                  : "Let your other devices transcribe using this machine"
+              }
+              hint={
+                <>
+                  With this on, your other WinWhisper devices can pick this
+                  machine in their model list and transcribe here instead. Worth
+                  doing on whichever machine has the fastest GPU.
+                  <br />
+                  <br />
+                  The transcript is always saved on the device that asked for it
+                  — this machine does the work and keeps nothing.
+                  <br />
+                  <br />
+                  Only devices signed into your own Tailscale account are
+                  accepted, checked against Tailscale itself. Machines other
+                  people have shared into your network are refused, and nothing
+                  is exposed to your local network or the internet.
+                  <br />
+                  <br />
+                  Takes effect when WinWhisper restarts.
+                </>
+              }
+            >
+              {devices?.tailscale_available === false ? (
+                <span className="text-meta text-text-dim">Tailscale not detected</span>
+              ) : (
+                <Toggle checked={sharing} onChange={handleSharing} label="" />
+              )}
+            </Row>
+
+            <Row
+              icon={<Power size={16} strokeWidth={1.75} />}
+              title="Start with Windows"
+              description="Opens quietly in the tray, not on screen"
+              hint={
+                <>
+                  WinWhisper signs in with you and waits in the notification
+                  area. No window appears.
+                  <br />
+                  <br />
+                  Worth turning on wherever you share an engine: another device
+                  can only borrow this machine's GPU while WinWhisper is
+                  actually running on it.
+                </>
+              }
+            >
+              <Toggle checked={startAtLogin} onChange={handleStartAtLogin} label="" />
+            </Row>
+
+            {devices && devices.devices.length > 0 && (
+              <div className="border-t border-hairline px-4 py-[14px]">
+                <p className="section-label mb-2.5">Found on your Tailscale network</p>
+                <div className="flex flex-col gap-1.5">
+                  {devices.devices.map((d) => (
+                    <div key={d.hostname} className="flex items-center gap-2.5 text-meta">
+                      <span
+                        className={cn(
+                          "h-1.5 w-1.5 flex-shrink-0 rounded-full",
+                          d.reachable
+                            ? "bg-accent-ink"
+                            : d.online
+                            ? "bg-warning"
+                            : "bg-text-dim/50"
+                        )}
+                      />
+                      <span className="w-[150px] truncate text-text-secondary">
+                        {d.hostname}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-text-dim">
+                        {d.reachable
+                          ? `${d.gpu_name ?? "no GPU"} · ${d.models.length} model${
+                              d.models.length === 1 ? "" : "s"
+                            }`
+                          : d.online
+                          ? "not sharing its engine"
+                          : "offline"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </Group>
+
           <Group id="automation" label="Automation">
             <Row
               icon={<Folder size={16} strokeWidth={1.75} />}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -25,6 +25,7 @@ import {
   api,
   AudioDevice,
   CaptureStatus,
+  DeviceInfo,
   JobResponse,
   TranscriptSummary,
 } from "@/lib/api";
@@ -101,6 +102,21 @@ const SLOW_MODELS: Record<string, string> = {
   "large-v3": "2–3× the recording's length",
 };
 
+/**
+ * The model picker holds two facts — which model, and whose machine — so its
+ * values carry both. A colon separates them: model names and Tailscale
+ * hostnames are both DNS-safe, so neither can contain one.
+ */
+function encodeChoice(host: string | null, model: string): string {
+  return `${host ?? ""}:${model}`;
+}
+
+function decodeChoice(value: string): [string | null, string] {
+  const at = value.indexOf(":");
+  const host = value.slice(0, at);
+  return [host || null, value.slice(at + 1)];
+}
+
 function slowOnThisMachine(model: string, device: string | null): boolean {
   // `device` is "GPU" | "CPU" | null; null means we have not heard from the
   // engine yet, and guessing wrong in either direction is worse than silence.
@@ -125,6 +141,12 @@ export default function Dashboard() {
 
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [device, setDevice] = useState<string | null>(null);
+
+  // Your other Tailscale machines. `remoteHost` is null when transcribing here;
+  // otherwise it names the machine doing the work, and the transcript still
+  // lands in this device's library either way.
+  const [remoteDevices, setRemoteDevices] = useState<DeviceInfo[]>([]);
+  const [remoteHost, setRemoteHost] = useState<string | null>(null);
 
   // Microphone recording
   const [recording, setRecording] = useState(false);
@@ -165,6 +187,46 @@ export default function Dashboard() {
         setDevice(hw?.recommended_device === "cuda" ? "GPU" : "CPU");
       })
       .catch(() => {});
+  }, []);
+
+  // This machine's models first, then whatever each of your other machines is
+  // offering. Only models a device actually has on disk appear against it, so
+  // choosing one can never begin with a silent multi-gigabyte download.
+  const modelChoices = useMemo(() => {
+    const here = availableModels.map((m) => ({ value: encodeChoice(null, m), label: m }));
+    const elsewhere = remoteDevices.flatMap((d) =>
+      d.models.map((m) => ({
+        value: encodeChoice(d.hostname, m),
+        label: `${m} · ${d.label}`,
+      }))
+    );
+    const all = [...here, ...elsewhere];
+    return all.length ? all : [{ value: encodeChoice(null, model), label: "No models yet" }];
+  }, [availableModels, remoteDevices, model]);
+
+  // A machine can go offline while its model is selected; fall back rather than
+  // submitting a job to something that is no longer there.
+  useEffect(() => {
+    if (!remoteHost) return;
+    const still = remoteDevices.find((d) => d.hostname === remoteHost);
+    if (!still || !still.models.includes(model)) setRemoteHost(null);
+  }, [remoteDevices, remoteHost, model]);
+
+  // Refreshed rather than fetched once: a machine that was asleep when the app
+  // opened should appear in the picker when it wakes, without a restart.
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      api
+        .devices()
+        .then((d) => !cancelled && setRemoteDevices(d.devices.filter((x) => x.reachable)))
+        .catch(() => {});
+    load();
+    const id = setInterval(load, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, []);
 
   const loadTranscripts = useCallback(() => {
@@ -401,6 +463,7 @@ export default function Dashboard() {
           model_name: model,
           language: language || undefined,
           diarize,
+          device: remoteHost ?? undefined,
         });
       } else if (droppedPath) {
         await api.transcribe.file({
@@ -409,6 +472,7 @@ export default function Dashboard() {
           language: language || undefined,
           diarize,
           translate,
+          device: remoteHost ?? undefined,
         });
       } else if (droppedFile) {
         await api.transcribe.upload(droppedFile, {
@@ -416,6 +480,7 @@ export default function Dashboard() {
           language: language || undefined,
           diarize,
           translate,
+          device: remoteHost ?? undefined,
         });
       }
       setDroppedPath(null);
@@ -579,16 +644,22 @@ export default function Dashboard() {
           <div className="flex flex-wrap items-center gap-3">
             <Select
               label="Model"
-              value={model}
-              onChange={setModel}
-              minWidth={132}
-              options={
-                availableModels.length
-                  ? availableModels.map((m) => ({ value: m, label: m }))
-                  : [{ value: model, label: "No models yet" }]
-              }
+              value={encodeChoice(remoteHost, model)}
+              onChange={(choice) => {
+                const [host, name] = decodeChoice(choice);
+                setRemoteHost(host);
+                setModel(name);
+              }}
+              minWidth={remoteDevices.length ? 210 : 132}
+              options={modelChoices}
             />
-            {slowOnThisMachine(model, device) && (
+            {remoteHost && (
+              <span className="flex items-center gap-1.5 text-meta text-accent-ink">
+                <Zap size={13} strokeWidth={1.75} className="flex-shrink-0" />
+                Runs on {remoteHost} · the transcript is saved here
+              </span>
+            )}
+            {!remoteHost && slowOnThisMachine(model, device) && (
               <span className="flex items-center gap-1.5 text-meta text-warning">
                 <TriangleAlert size={13} strokeWidth={1.75} className="flex-shrink-0" />
                 Slow without a GPU — allow {SLOW_MODELS[model]}

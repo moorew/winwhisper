@@ -6,7 +6,7 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 
 def _force_utf8_output() -> None:
@@ -39,6 +39,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes_audio import router as audio_router
+from api.routes_devices import router as devices_router
 from api.routes_dictation import router as dictation_router
 from api.routes_health import router as health_router
 from api.routes_jobs import router as jobs_router
@@ -46,8 +47,10 @@ from api.routes_models import router as models_router
 from api.routes_settings import router as settings_router
 from api.routes_transcription import router as transcription_router
 from api.routes_watch_folder import router as watch_folder_router
+from core import remote, tailnet
 from core.database import Job, async_session_factory, init_db
 from core.hardware import get_hardware
+from core.sharing import TailnetOwnerOnly
 from core.job_worker import recover_stale_jobs, worker
 from core.settings import get_setting
 from core.storage import storage
@@ -175,9 +178,69 @@ def create_app() -> FastAPI:
     app.include_router(audio_router)
     app.include_router(dictation_router)
     app.include_router(watch_folder_router)
+    app.include_router(devices_router)
     app.include_router(settings_router)
 
+    # Outermost, so it runs before anything else touches a request. Loopback is
+    # waved through; anything arriving over the tailnet must belong to you.
+    app.add_middleware(TailnetOwnerOnly)
+
     return app
+
+
+async def _share_address() -> Optional[str]:
+    """
+    The Tailscale address to offer this machine's engine on, or None.
+
+    Deliberately the tailnet address rather than 0.0.0.0: bound this way the
+    engine is not listening on the local network at all, so the coffee-shop wifi
+    never gets so far as being refused.
+    """
+    from core.settings import get_setting
+
+    await init_db()   # idempotent; the lifespan runs it again
+    if not await get_setting("share_engine", False):
+        return None
+
+    address = await asyncio.to_thread(tailnet.tailnet_ipv4)
+    if not address:
+        print(
+            "[WinWhisper] Sharing is on but Tailscale gave no address for this "
+            "machine — is it running and logged in? Sharing is off this session.",
+            flush=True,
+        )
+    return address
+
+
+async def _serve(app: FastAPI, port: int) -> None:
+    def server(host: str, on_port: int, primary: bool) -> uvicorn.Server:
+        config = uvicorn.Config(
+            app,
+            host=host,
+            port=on_port,
+            log_level="warning",
+            access_log=False,
+            # One app, two listeners — so exactly one of them may own startup
+            # and shutdown, or the worker would be started twice.
+            lifespan="on" if primary else "off",
+        )
+        instance = uvicorn.Server(config)
+        if not primary:
+            instance.install_signal_handlers = lambda: None
+        return instance
+
+    servers = [server("127.0.0.1", port, primary=True)]
+
+    share_ip = await _share_address()
+    if share_ip:
+        servers.append(server(share_ip, remote.SHARE_PORT, primary=False))
+        print(
+            f"[WinWhisper] Sharing this engine at {share_ip}:{remote.SHARE_PORT} "
+            "for your other Tailscale devices.",
+            flush=True,
+        )
+
+    await asyncio.gather(*(s.serve() for s in servers))
 
 
 def main() -> None:
@@ -187,13 +250,7 @@ def main() -> None:
     # Tauri reads this line from sidecar stdout to discover the port
     print(f"WINWHISPER_PORT={port}", flush=True)
 
-    uvicorn.run(
-        create_app(),
-        host="127.0.0.1",
-        port=port,
-        log_level="warning",
-        access_log=False,
-    )
+    asyncio.run(_serve(create_app(), port))
 
 
 if __name__ == "__main__":

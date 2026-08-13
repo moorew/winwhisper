@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from core.database import Job, Segment, Speaker, Transcript, get_session
+from core import remote
 from core.job_worker import worker
 from core.storage import storage
 
@@ -32,6 +33,9 @@ class TranscribeFileRequest(BaseModel):
     num_speakers: Optional[int] = None
     min_speakers: Optional[int] = None
     max_speakers: Optional[int] = None
+    # Hostname of one of your other machines, or None/"local" for this one.
+    # Resolved against live discovery — never a URL.
+    device: Optional[str] = None
 
 
 class TranscribeYouTubeRequest(BaseModel):
@@ -44,6 +48,9 @@ class TranscribeYouTubeRequest(BaseModel):
     num_speakers: Optional[int] = None
     min_speakers: Optional[int] = None
     max_speakers: Optional[int] = None
+    # Hostname of one of your other machines, or None/"local" for this one.
+    # Resolved against live discovery — never a URL.
+    device: Optional[str] = None
 
 
 class JobCreatedResponse(BaseModel):
@@ -140,6 +147,29 @@ def _build_options(
     }
 
 
+async def _resolve_device(device: Optional[str]) -> Optional[str]:
+    """
+    Turns a requested device name into one we have actually seen, or raises.
+
+    Only the name crosses the API. Accepting a URL instead would let anything
+    able to reach this engine point it at an address of its choosing, so the
+    resolution happens here against live discovery.
+    """
+    if not device or device.lower() == "local":
+        return None
+
+    found = await remote.find_device(device)
+    if found is None:
+        raise HTTPException(
+            404,
+            f"'{device}' is not one of your devices, or it is not sharing its "
+            "engine right now.",
+        )
+    if not found.reachable:
+        raise HTTPException(409, f"{found.hostname} is not answering right now.")
+    return found.hostname
+
+
 async def _create_and_enqueue(
     session: AsyncSession,
     *,
@@ -149,6 +179,7 @@ async def _create_and_enqueue(
     source_path: Optional[str] = None,
     source_url: Optional[str] = None,
     source_name: Optional[str] = None,
+    remote_device: Optional[str] = None,
 ) -> Job:
     job = Job(
         id=str(uuid.uuid4()),
@@ -159,6 +190,7 @@ async def _create_and_enqueue(
         source_name=source_name,
         model_name=model_name,
         options=options,
+        remote_device=remote_device,
     )
     session.add(job)
     await session.commit()
@@ -189,6 +221,7 @@ async def transcribe_file(
         ),
         source_path=str(path),
         source_name=path.name,
+        remote_device=await _resolve_device(req.device),
     )
     return JobCreatedResponse(job_id=job.id, status=job.status)
 
@@ -206,6 +239,9 @@ async def transcribe_upload(
     translate: bool = Form(False),
     word_timestamps: bool = Form(True),
     vad_filter: bool = Form(True),
+    # Form(...) for the same reason as the rest: a bare scalar would be read
+    # from the query string and the chosen device silently dropped.
+    device: Optional[str] = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> JobCreatedResponse:
     dest = storage.temp_audio_path(f"{uuid.uuid4()}_{file.filename}")
@@ -218,6 +254,7 @@ async def transcribe_upload(
         options=_build_options(diarize, translate, word_timestamps, vad_filter, language),
         source_path=str(dest),
         source_name=file.filename,
+        remote_device=await _resolve_device(device),
     )
     return JobCreatedResponse(job_id=job.id, status=job.status)
 
@@ -237,6 +274,7 @@ async def transcribe_youtube(
         ),
         source_url=req.url,
         source_name=req.url,
+        remote_device=await _resolve_device(req.device),
     )
     return JobCreatedResponse(job_id=job.id, status=job.status)
 

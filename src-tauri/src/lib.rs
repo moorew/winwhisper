@@ -190,6 +190,36 @@ fn focus_main_window(app: AppHandle) {
     }
 }
 
+/// Argument the autostart entry carries, so a login launch can tell itself
+/// apart from someone double-clicking the icon.
+const STARTUP_ARG: &str = "--startup";
+
+fn launched_at_login() -> bool {
+    std::env::args().any(|arg| arg == STARTUP_ARG)
+}
+
+#[tauri::command]
+fn get_start_at_login(app: AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+/// Turns the login entry on or off.
+///
+/// Worth having for its own sake, but it is what makes a shared GPU dependable:
+/// the machine doing the transcribing has to be running WinWhisper for another
+/// device to reach it, and nobody wants to walk over and open it first.
+#[tauri::command]
+fn set_start_at_login(app: AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    let outcome = if enabled { manager.enable() } else { manager.disable() };
+    outcome.map_err(|e| {
+        log_line(&format!("[WinWhisper] could not change the login entry: {e}"));
+        e.to_string()
+    })
+}
+
 #[tauri::command]
 fn open_external(url: String) {
     let _ = std::process::Command::new("cmd")
@@ -199,6 +229,10 @@ fn open_external(url: String) {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![STARTUP_ARG]),
+        ))
         .manage(Arc::new(EngineState {
             port: Mutex::new(None),
         }))
@@ -223,8 +257,16 @@ pub fn run() {
             let handle = app.handle().clone();
             apply_window_material(&handle);
             setup_tray(&handle)?;
-            // Show the window immediately so users see the UI while the engine loads
-            show_window(&handle);
+            // Started by Windows at login, the point is to have the engine
+            // running — for this machine's own hotkeys and for any other device
+            // borrowing its GPU. Putting a window on screen at sign-in would be
+            // an imposition, so it waits in the tray until asked for.
+            if launched_at_login() {
+                log_line("[WinWhisper] started at login — staying in the tray.");
+            } else {
+                // Show the window immediately so users see the UI while the engine loads
+                show_window(&handle);
+            }
             spawn_engine(handle);
             Ok(())
         })
@@ -234,7 +276,9 @@ pub fn run() {
             take_dropped_paths,
             open_capture_window,
             close_capture_window,
-            focus_main_window
+            focus_main_window,
+            get_start_at_login,
+            set_start_at_login
         ])
         .run(tauri::generate_context!())
         .expect("error while running WinWhisper");

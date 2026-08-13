@@ -44,6 +44,11 @@ class Job(Base):
     source_url = Column(String, nullable=True)
     source_name = Column(String, nullable=True)
 
+    # Hostname of the machine doing the transcribing, or NULL for this one.
+    # The transcript still lands here either way — the remote is pure compute
+    # and its copy is deleted once the result is safely stored locally.
+    remote_device = Column(String(100), nullable=True)
+
     model_name = Column(String(50), nullable=False, default="base")
     language = Column(String(10), nullable=True)   # None = auto-detect
     options = Column(JSON, nullable=False, default=dict)
@@ -164,20 +169,26 @@ async def init_db() -> None:
 
 async def _migrate_schema(conn) -> None:
     """Apply lightweight SQLite migrations for users upgrading old builds."""
-    result = await conn.execute(text("PRAGMA table_info(downloaded_models)"))
-    columns = {row[1] for row in result.fetchall()}
-
-    migrations = {
-        "size_bytes": "ALTER TABLE downloaded_models ADD COLUMN size_bytes INTEGER",
-        "downloaded_at": "ALTER TABLE downloaded_models ADD COLUMN downloaded_at DATETIME",
-        "is_active": "ALTER TABLE downloaded_models ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 0",
-        "compute_type": "ALTER TABLE downloaded_models ADD COLUMN compute_type VARCHAR(20) NOT NULL DEFAULT 'int8'",
-        "hub_repo_id": "ALTER TABLE downloaded_models ADD COLUMN hub_repo_id VARCHAR(100)",
+    per_table = {
+        "downloaded_models": {
+            "size_bytes": "ALTER TABLE downloaded_models ADD COLUMN size_bytes INTEGER",
+            "downloaded_at": "ALTER TABLE downloaded_models ADD COLUMN downloaded_at DATETIME",
+            "is_active": "ALTER TABLE downloaded_models ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 0",
+            "compute_type": "ALTER TABLE downloaded_models ADD COLUMN compute_type VARCHAR(20) NOT NULL DEFAULT 'int8'",
+            "hub_repo_id": "ALTER TABLE downloaded_models ADD COLUMN hub_repo_id VARCHAR(100)",
+        },
+        "jobs": {
+            # Which of your machines is doing the work. NULL means this one.
+            "remote_device": "ALTER TABLE jobs ADD COLUMN remote_device VARCHAR(100)",
+        },
     }
 
-    for column, statement in migrations.items():
-        if column not in columns:
-            await conn.execute(text(statement))
+    for table, migrations in per_table.items():
+        result = await conn.execute(text(f"PRAGMA table_info({table})"))
+        columns = {row[1] for row in result.fetchall()}
+        for column, statement in migrations.items():
+            if column not in columns:
+                await conn.execute(text(statement))
 
 
 async def _seed_defaults() -> None:
@@ -195,6 +206,9 @@ async def _seed_defaults() -> None:
         "word_timestamps": True,
         "theme": "system",
         "cps_warning_threshold": 21.0,
+        # Off by default: offering this machine's engine to your other devices
+        # is a decision, not a default. Read at startup — see main.py.
+        "share_engine": False,
     }
     async with async_session_factory() as session:
         for key, value in defaults.items():

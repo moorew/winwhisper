@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import select
 
-from core import watchdog
+from core import remote, watchdog
 from core.database import Job, Segment, Speaker, Transcript, async_session_factory
 from core.diarizer import SPEAKER_COLORS, diarizer, merge_speakers
 from core.settings import get_setting
@@ -21,6 +21,10 @@ from core.transcriber import TranscriptionCancelled, transcriber
 # cleared when the job finishes. Lets the API return live progress without
 # a DB write on every segment.
 _live_progress: Dict[str, float] = {}
+
+# How often to ask another machine how its half of the job is going. Fast
+# enough that the bar and the live preview move like a local job.
+REMOTE_POLL_SECONDS = 1.0
 
 # Ceiling on the YouTube download phase. Generous enough for a long video on a
 # slow connection, but bounded — the worker is single-threaded.
@@ -203,6 +207,70 @@ async def _save_results(
     return transcript_id
 
 
+async def _import_transcript(job: Job, payload: dict) -> str:
+    """
+    Stores a transcript produced by one of your other machines.
+
+    This is the whole point of the arrangement: the GPU box does the work, the
+    machine you asked from keeps the result. Everything is rewritten with local
+    identifiers — the remote's transcript and segment ids mean nothing here, and
+    its copy is deleted straight afterwards.
+
+    `source_path` is deliberately not taken from the payload. It names a file on
+    the other machine, which would make the editor offer playback of something
+    that does not exist here.
+    """
+    transcript_id = str(uuid.uuid4())
+    segments = payload.get("segments") or []
+    speakers = payload.get("speakers") or []
+
+    async with async_session_factory() as session:
+        session.add(
+            Transcript(
+                id=transcript_id,
+                job_id=job.id,
+                title=payload.get("title") or job.source_name or "Transcript",
+                language=payload.get("language"),
+                language_probability=payload.get("language_probability"),
+                duration=payload.get("duration"),
+                word_count=payload.get("word_count") or 0,
+                source_type=job.job_type,
+            )
+        )
+        await session.flush()
+
+        for index, segment in enumerate(segments):
+            session.add(
+                Segment(
+                    transcript_id=transcript_id,
+                    segment_index=segment.get("segment_index", index),
+                    start=segment.get("start") or 0.0,
+                    end=segment.get("end") or 0.0,
+                    text=(segment.get("text") or "").strip(),
+                    speaker_label=segment.get("speaker_label"),
+                    confidence=segment.get("confidence"),
+                    cps=segment.get("cps") or 0.0,
+                    words=segment.get("words"),
+                )
+            )
+
+        for index, speaker in enumerate(speakers):
+            session.add(
+                Speaker(
+                    transcript_id=transcript_id,
+                    label=speaker.get("label") or f"SPEAKER_{index}",
+                    # Keep the colour the other machine chose so a transcript
+                    # does not change appearance depending on where it ran.
+                    color=speaker.get("color") or SPEAKER_COLORS[index % len(SPEAKER_COLORS)],
+                    name=speaker.get("name"),
+                )
+            )
+
+        await session.commit()
+
+    return transcript_id
+
+
 async def _cleanup_temp(file_path: str) -> None:
     """Deletes a file only if it lives inside our own temp directory."""
     try:
@@ -350,6 +418,10 @@ class JobWorker:
         await _update_job(job_id, "processing", progress=0.0)
         _live_progress[job_id] = 0.0
 
+        if job.remote_device:
+            await self._process_remote(job)
+            return
+
         started_at = time.monotonic()
         temp_audio: Optional[str] = None   # files we created that need cleanup
 
@@ -480,6 +552,135 @@ class JobWorker:
         # ── Cleanup temp audio ─────────────────────────────────────────────
         if temp_audio:
             await _cleanup_temp(temp_audio)
+
+
+    async def _process_remote(self, job: Job) -> None:
+        """
+        Hands a job to one of your other machines and brings the result home.
+
+        The remote engine is treated as compute and nothing else: it downloads
+        or receives the audio, transcribes it, and hands back a transcript we
+        write into *this* database under our own identifiers. Its copy — job,
+        transcript and cached audio — is deleted as soon as ours is committed.
+        That ordering is deliberate. Deleting first and importing second would
+        turn a momentary network fault into a lost transcript.
+        """
+        job_id = job.id
+        started_at = time.monotonic()
+        device_name = job.remote_device or ""
+
+        _set_stage(job_id, f"Contacting {device_name}")
+        watchdog.begin(f"contacting {device_name}")
+
+        device = await remote.find_device(device_name)
+        if device is None or not device.reachable:
+            raise RuntimeError(
+                f"{device_name} is not available right now. It needs to be awake, "
+                "on your Tailscale network, and sharing its engine."
+            )
+        if job.model_name not in device.models:
+            # Discovery only ever offers models the device already has, so this
+            # means it changed underneath us. Failing beats silently doing the
+            # slow thing here instead.
+            raise RuntimeError(
+                f"{device_name} no longer has the {job.model_name} model. "
+                "Pick another model, or download it on that machine."
+            )
+
+        base_url = device.base_url
+        options = job.options or {}
+        remote_job_id: Optional[str] = None
+        remote_transcript_id: Optional[str] = None
+
+        try:
+            # ── Hand it over ──────────────────────────────────────────────
+            if job.job_type == "youtube":
+                if not job.source_url:
+                    raise ValueError("YouTube job has no source_url")
+                _set_stage(job_id, f"Sending to {device_name}")
+                remote_job_id = await remote.submit_youtube(
+                    base_url, job.source_url, job.model_name, options
+                )
+            else:
+                if not job.source_path or not Path(job.source_path).exists():
+                    raise FileNotFoundError(f"Audio file not found: {job.source_path}")
+                size_mb = Path(job.source_path).stat().st_size / 1048576
+                _set_stage(job_id, f"Uploading to {device_name} — {size_mb:.0f} MB")
+                watchdog.begin(f"uploading {size_mb:.0f} MB to {device_name}")
+                remote_job_id = await remote.submit_file(
+                    base_url,
+                    job.source_path,
+                    job.source_name or Path(job.source_path).name,
+                    job.model_name,
+                    options,
+                )
+
+            print(
+                f"[WinWhisper] job {job_id[:8]}: running on {device_name} "
+                f"as {remote_job_id[:8]} ({device.gpu_name or 'no GPU reported'})",
+                flush=True,
+            )
+
+            # ── Follow it ─────────────────────────────────────────────────
+            watchdog.begin(f"transcribing on {device_name}")
+            while True:
+                if is_cancel_requested(job_id):
+                    await remote.cancel_job(base_url, remote_job_id)
+                    raise TranscriptionCancelled()
+
+                snapshot = await remote.poll_job(base_url, remote_job_id)
+                status = snapshot.get("status")
+
+                # Mirror the remote's own reporting so the UI cannot tell the
+                # difference between a local job and a borrowed GPU.
+                _live_progress[job_id] = float(snapshot.get("progress") or 0.0)
+                if snapshot.get("stage"):
+                    _set_stage(job_id, f"{snapshot['stage']} · {device_name}", log=False)
+                if snapshot.get("partial_text"):
+                    _live_text[job_id] = snapshot["partial_text"]
+                watchdog.beat()
+
+                if status == "done":
+                    remote_transcript_id = snapshot.get("transcript_id")
+                    break
+                if status == "failed":
+                    raise RuntimeError(
+                        f"{device_name} could not finish it: "
+                        f"{snapshot.get('error_message') or 'no reason given'}"
+                    )
+                if status == "cancelled":
+                    raise TranscriptionCancelled()
+
+                await asyncio.sleep(REMOTE_POLL_SECONDS)
+
+            if not remote_transcript_id:
+                raise RuntimeError(f"{device_name} finished but returned no transcript")
+
+            # ── Bring it home ─────────────────────────────────────────────
+            _set_stage(job_id, f"Collecting the transcript from {device_name}")
+            watchdog.begin(f"collecting from {device_name}")
+            payload = await remote.fetch_transcript(base_url, remote_transcript_id)
+            transcript_id = await _import_transcript(job, payload)
+
+            await _update_job(job_id, "done", progress=1.0, transcript_id=transcript_id)
+
+            audio_seconds = payload.get("duration") or 0
+            elapsed = time.monotonic() - started_at
+            speed = f"{audio_seconds / elapsed:.1f}x realtime" if elapsed > 0 else "?"
+            print(
+                f"[WinWhisper] job {job_id[:8]} done on {device_name}: "
+                f"{len(payload.get('segments') or [])} segment(s) from "
+                f"{audio_seconds:.0f}s of audio in {elapsed:.0f}s ({speed}) "
+                f"using {job.model_name}",
+                flush=True,
+            )
+
+        finally:
+            watchdog.end()
+            # Only once the transcript is committed here, so a failure part-way
+            # leaves the work recoverable on the other machine rather than gone.
+            if remote_job_id:
+                await remote.cleanup(base_url, remote_job_id, remote_transcript_id)
 
 
 # Module-level singleton

@@ -13,6 +13,31 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface DeviceInfo {
+  hostname: string;
+  /** "FRACTAL (NVIDIA GeForce RTX 5080)" — what the model picker shows. */
+  label: string;
+  os: string;
+  /** Tailscale can see it. */
+  online: boolean;
+  /** WinWhisper answered on it — i.e. it is actually sharing. */
+  reachable: boolean;
+  version: string | null;
+  gpu_name: string | null;
+  cuda_available: boolean;
+  /** Only models it already has on disk. */
+  models: string[];
+  jobs_running: number;
+}
+
+export interface DevicesResponse {
+  tailscale_available: boolean;
+  sharing: boolean;
+  share_port: number;
+  this_device: string | null;
+  devices: DeviceInfo[];
+}
+
 export interface JobResponse {
   id: string;
   status: "queued" | "processing" | "done" | "failed" | "cancelled";
@@ -169,28 +194,33 @@ export const api = {
       }),
   },
 
+  /** Your other Tailscale machines, and whether any is offering its GPU. */
+  devices: (refresh = false) =>
+    request<DevicesResponse>(`/devices${refresh ? "?refresh=true" : ""}`),
+
   transcribe: {
-    file: (body: { file_path: string; model_name?: string; language?: string; diarize?: boolean; translate?: boolean; word_timestamps?: boolean; vad_filter?: boolean }) =>
+    file: (body: { file_path: string; model_name?: string; language?: string; diarize?: boolean; translate?: boolean; word_timestamps?: boolean; vad_filter?: boolean; device?: string }) =>
       request<{ job_id: string; status: string }>("/transcribe/file", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       }),
 
-    upload: (file: File, opts: { model_name?: string; language?: string; diarize?: boolean; translate?: boolean }) => {
+    upload: (file: File, opts: { model_name?: string; language?: string; diarize?: boolean; translate?: boolean; device?: string }) => {
       const form = new FormData();
       form.append("file", file);
       if (opts.model_name) form.append("model_name", opts.model_name);
       if (opts.language) form.append("language", opts.language);
       if (opts.diarize) form.append("diarize", String(opts.diarize));
       if (opts.translate) form.append("translate", String(opts.translate));
+      if (opts.device) form.append("device", opts.device);
       return request<{ job_id: string; status: string }>("/transcribe/upload", {
         method: "POST",
         body: form,
       });
     },
 
-    youtube: (body: { url: string; model_name?: string; language?: string; diarize?: boolean }) =>
+    youtube: (body: { url: string; model_name?: string; language?: string; diarize?: boolean; device?: string }) =>
       request<{ job_id: string; status: string }>("/transcribe/youtube", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

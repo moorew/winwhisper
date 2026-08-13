@@ -29,8 +29,17 @@ from main import create_app  # noqa: E402
 
 @pytest.fixture(scope="session")
 def client():
-    """A TestClient with the app's real lifespan (DB init + job worker) running."""
-    with TestClient(create_app()) as test_client:
+    """
+    A TestClient with the app's real lifespan (DB init + job worker) running.
+
+    `client=` is set because the engine now checks who is calling: loopback is
+    waved through, anything else has to prove it is one of your Tailscale
+    devices. TestClient otherwise presents itself as the host "testclient",
+    which is neither, so every request would be a 403. A real local request
+    carries 127.0.0.1 — this makes the fixture look like one rather than
+    carving a hole in the check for tests.
+    """
+    with TestClient(create_app(), client=("127.0.0.1", 51000)) as test_client:
         yield test_client
 
 

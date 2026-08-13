@@ -1,6 +1,6 @@
 [package]
 name = "winwhisper"
-version = "0.4.8"
+version = "0.5.0"
 description = "WinWhisper — Premium Windows Transcription App"
 authors = []
 edition = "2021"
@@ -23,6 +23,12 @@ serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 tokio        = { version = "1", features = ["net", "time", "rt", "process", "io-util"] }
 zip          = { version = "2", default-features = false, features = ["deflate"] }
+
+# Start with Windows so a machine sharing its GPU is available without someone
+# having to open the app on it first. Wrapped in our own commands rather than
+# exposed directly — plugin commands are subject to the capability ACL, ours
+# are not, which is the same reason the window controls are wrapped.
+tauri-plugin-autostart = "2"
 
 # Mica behind the custom titlebar and rail on Windows 11. The chrome gradient
 # in globals.css is the fallback wherever it cannot be applied.
