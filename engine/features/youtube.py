@@ -16,6 +16,37 @@ except ImportError:
 STALL_SECONDS = 90
 
 
+# Player clients to try, in order, until one produces a file.
+#
+# YouTube hands each client a different set of format URLs, and a URL is only
+# good for the client that issued it. Asking for several at once merges their
+# formats and picks the best by bitrate — which can hand back a URL whose client
+# needs a proof-of-origin token we cannot supply, and that fails with 403 at
+# download time, long after the format was chosen. Nothing in the format
+# selector can express "and make sure this one actually works".
+#
+# So the retry is over whole clients rather than formats. Observed while
+# diagnosing this: `web` alone cannot serve format 140 at all ("requested format
+# is not available"), yet pairing it with `android_vr` let its unusable URL win
+# the selection and 403 the download. `tv` reports DRM on videos the others
+# fetch happily.
+CLIENT_ATTEMPTS: Tuple[Tuple[str, ...], ...] = (
+    ("default",),               # yt-dlp's own maintained choice
+    ("android_vr",),            # needs no JS runtime, which a bundled app has not got
+    ("android_vr", "web"),
+    ("web_safari", "mweb"),
+)
+
+
+# Grows with each attempt: 3s, 6s, 9s. Long enough to outlast a brief throttle,
+# short enough that a genuinely unavailable video still fails promptly.
+RETRY_BACKOFF_SECONDS = 3.0
+
+
+class _StalledDownload(RuntimeError):
+    """Our own stall guard tripped — a different player client will not help."""
+
+
 class _YtdlLogger:
     """Forwards yt-dlp's messages into the engine log rather than the console."""
 
@@ -83,14 +114,60 @@ class YouTubeExtractor:
         on_detail: Optional[Callable[[str], None]] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """
-        Downloads the best available audio from url into output_dir.
+        Downloads the best available audio from url into output_dir, trying each
+        player client in turn until one works.
         Calls on_progress(0.0–1.0) and on_detail("12.4 MB of 38.1 MB · 2.1 MB/s")
         during the download phase.
         Returns (absolute_file_path, metadata_dict).
         """
         _check_available()
 
-        # Unique prefix so parallel downloads never collide
+        last_error: Optional[BaseException] = None
+        for attempt, clients in enumerate(CLIENT_ATTEMPTS, start=1):
+            try:
+                return self._download_once(
+                    url, output_dir, clients, on_progress, on_detail
+                )
+            except _StalledDownload:
+                # The bytes stopped arriving. That is the network, not the
+                # client, and three more attempts would only be three more
+                # ninety-second waits.
+                raise
+            except Exception as exc:
+                last_error = exc
+                remaining = len(CLIENT_ATTEMPTS) - attempt
+                print(
+                    f"[WinWhisper] YouTube: player client {'+'.join(clients)} failed "
+                    f"({exc.__class__.__name__}: {str(exc).strip()[:160]})"
+                    + (f" — trying another ({remaining} left)" if remaining else ""),
+                    flush=True,
+                )
+                if on_progress:
+                    on_progress(0.0)
+                if remaining:
+                    # These 403s are transient and scoped to the address, not to
+                    # the client: while diagnosing this I watched all four
+                    # clients fail within three seconds, then the first of them
+                    # succeed on the very next run. Retrying instantly mostly
+                    # re-asks a server that is still saying no.
+                    time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+
+        raise RuntimeError(
+            f"Could not download audio after trying {len(CLIENT_ATTEMPTS)} player "
+            f"clients. YouTube rejected every one. Last error: {last_error}"
+        ) from last_error
+
+    def _download_once(
+        self,
+        url: str,
+        output_dir: str,
+        clients: Tuple[str, ...],
+        on_progress: Optional[Callable[[float], None]] = None,
+        on_detail: Optional[Callable[[str], None]] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """One download attempt with one set of player clients."""
+        # Unique per attempt, so a failed try's leftovers can never be mistaken
+        # for this one's output by the glob below.
         prefix = uuid.uuid4().hex[:8]
 
         # If nothing arrives for this long the connection is dead in all but
@@ -128,7 +205,7 @@ class YouTubeExtractor:
                 progress_state["bytes"] = downloaded
                 progress_state["changed"] = now
             elif now - progress_state["changed"] > stall_limit:
-                raise RuntimeError(
+                raise _StalledDownload(
                     f"YouTube download stalled — no data for {stall_limit}s "
                     f"after {downloaded / 1048576:.1f} MB. The video may be "
                     "rate-limited; try again or use a different video."
@@ -194,20 +271,16 @@ class YouTubeExtractor:
             # this yt-dlp works through the JS-dependent clients first, which
             # on a machine with no runtime means slow fallbacks and throttled
             # transfers.
-            # ios is omitted deliberately: it needs a PO token we cannot supply and only
-            # produces a warning before being skipped.
-            #
-            # "default" trails the two we prefer as a safety net: YouTube hands
-            # out 403s per client and the set that works changes without notice,
-            # so a hard-coded pair of clients is a single point of failure. This
-            # costs an extra extraction attempt only when the preferred ones
-            # have already failed.
-            "extractor_args": {
-                "youtube": {"player_client": ["android_vr", "web", "default"]}
-            },
+            # Chosen by the caller, which retries with a different set when a
+            # download fails. See CLIENT_ATTEMPTS.
+            "extractor_args": {"youtube": {"player_client": list(clients)}},
         }
 
-        print(f"[WinWhisper] YouTube: downloading audio for {url}", flush=True)
+        print(
+            f"[WinWhisper] YouTube: downloading audio for {url} "
+            f"via player client {'+'.join(clients)}",
+            flush=True,
+        )
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
