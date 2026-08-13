@@ -179,12 +179,30 @@ function Rail({ engineState }: { engineState: EngineState }) {
   // The dot carries a 3px halo of its own colour at 15%. "Starting" covers the
   // cold start, which is tens of seconds — only a engine that has answered and
   // then stopped is reported as offline.
+  // The title is what a hover reveals, and it is the only place the collapsed
+  // rail can explain itself — "starting" on its own tells someone a minute into
+  // a cold start nothing they did not already fear.
   const status =
     engineState === "starting"
-      ? { label: "Engine starting…", dot: "bg-warning ring-warning/15", pulse: true }
+      ? {
+          label: "Starting up…",
+          title: "Getting the transcription engine ready — about a minute after an update. Nothing is wrong.",
+          dot: "bg-warning ring-warning/15",
+          pulse: true,
+        }
       : engineState === "ready"
-      ? { label: "Engine ready", dot: "bg-accent-ink ring-accent-ink/15", pulse: false }
-      : { label: "Engine offline", dot: "bg-danger ring-danger/15", pulse: true };
+      ? {
+          label: "Engine ready",
+          title: "The transcription engine is running on this machine.",
+          dot: "bg-accent-ink ring-accent-ink/15",
+          pulse: false,
+        }
+      : {
+          label: "Engine offline",
+          title: "The engine stopped responding. Restart WinWhisper; if it persists, check %APPDATA%\\WinWhisper\\engine.log.",
+          dot: "bg-danger ring-danger/15",
+          pulse: true,
+        };
 
   return (
     <nav
@@ -258,7 +276,7 @@ function Rail({ engineState }: { engineState: EngineState }) {
           "flex h-[38px] flex-shrink-0 items-center",
           expanded ? "pl-[11px]" : "justify-center"
         )}
-        title={expanded ? undefined : status.label}
+        title={status.title}
       >
         <span
           className={cn(

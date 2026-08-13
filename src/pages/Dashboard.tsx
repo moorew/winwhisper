@@ -15,6 +15,7 @@ import {
   Search,
   Square,
   Trash2,
+  TriangleAlert,
   Upload,
   X,
   Youtube,
@@ -80,6 +81,30 @@ const FAILURE_VISIBLE_MS = 30 * 60 * 1000;
 
 interface DragDropPayload {
   paths: string[];
+}
+
+/**
+ * Roughly how much slower than real time each model runs on a CPU, i.e. a
+ * multiplier on the recording's own length.
+ *
+ * Measured rather than guessed: base transcribes a 9m33s recording in about a
+ * minute on a modest CPU, and large-v3 was still going twenty minutes in on the
+ * same machine and the same audio. The point is not precision — it is that
+ * picking large-v3 on a laptop turns a one-minute job into a twenty-minute one,
+ * and nothing in the app said so. Someone watching a bar that has not moved in
+ * ten minutes reasonably concludes it has hung.
+ */
+const SLOW_MODELS: Record<string, string> = {
+  medium: "about as long as the recording itself",
+  "large-v1": "2–3× the recording's length",
+  "large-v2": "2–3× the recording's length",
+  "large-v3": "2–3× the recording's length",
+};
+
+function slowOnThisMachine(model: string, device: string | null): boolean {
+  // `device` is "GPU" | "CPU" | null; null means we have not heard from the
+  // engine yet, and guessing wrong in either direction is worse than silence.
+  return device === "CPU" && model in SLOW_MODELS;
 }
 
 export default function Dashboard() {
@@ -182,6 +207,21 @@ export default function Dashboard() {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [jobs]);
+
+  // A cold start unpacks 13,500-odd files before the engine can answer, which
+  // is most of a minute after an update. A counter that keeps moving is the
+  // difference between "it is working" and "it has died" — a static label
+  // reads as frozen long before the wait is actually over.
+  const [startupSeconds, setStartupSeconds] = useState(0);
+  useEffect(() => {
+    if (engineState !== "starting") return;
+    const began = Date.now();
+    const id = setInterval(
+      () => setStartupSeconds(Math.floor((Date.now() - began) / 1000)),
+      1000
+    );
+    return () => clearInterval(id);
+  }, [engineState]);
 
   // ── Drag & drop ─────────────────────────────────────────────────────────
   // Dropping anywhere in the pane activates the composer's drag-over state.
@@ -453,7 +493,9 @@ export default function Dashboard() {
           ) : engineState === "starting" ? (
             <Pill className="border-warning/30">
               <Loader size={14} strokeWidth={1.75} className="animate-spin text-warning" />
-              <span>Starting the engine…</span>
+              <span className="tnum">
+                Starting up{startupSeconds > 3 ? ` · ${startupSeconds}s` : "…"}
+              </span>
             </Pill>
           ) : (
             <Pill className="border-danger/30">
@@ -534,6 +576,12 @@ export default function Dashboard() {
                   : [{ value: model, label: "No models yet" }]
               }
             />
+            {slowOnThisMachine(model, device) && (
+              <span className="flex items-center gap-1.5 text-meta text-warning">
+                <TriangleAlert size={13} strokeWidth={1.75} className="flex-shrink-0" />
+                Slow without a GPU — allow {SLOW_MODELS[model]}
+              </span>
+            )}
             <Select
               label="Language"
               value={language}
@@ -572,10 +620,21 @@ export default function Dashboard() {
             </div>
           )}
           {engineState === "starting" ? (
-            <p className="text-meta text-text-dim">
-              The transcription engine is still loading — this takes up to a minute
-              on the first launch after an update.
-            </p>
+            <div className="flex items-start gap-2 text-meta text-text-dim">
+              <Loader
+                size={14}
+                strokeWidth={1.75}
+                className="mt-px flex-shrink-0 animate-spin text-warning"
+              />
+              <span>
+                <span className="text-text-tertiary">
+                  Getting the transcription engine ready.
+                </span>{" "}
+                The first launch after an update unpacks it, which takes about a
+                minute — nothing is wrong, and you can queue work as soon as this
+                clears. It is quicker every time after this.
+              </span>
+            </div>
           ) : (
             availableModels.length === 0 && (
               <p className="text-meta text-text-dim">

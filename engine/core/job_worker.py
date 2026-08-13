@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import traceback
 import uuid
 from datetime import datetime
@@ -349,6 +350,7 @@ class JobWorker:
         await _update_job(job_id, "processing", progress=0.0)
         _live_progress[job_id] = 0.0
 
+        started_at = time.monotonic()
         temp_audio: Optional[str] = None   # files we created that need cleanup
 
         # ── YouTube download (progress 0 → 0.25) ──────────────────────────
@@ -460,6 +462,21 @@ class JobWorker:
         transcript_id = await _save_results(job, segments, info, speaker_labels)
         await _update_job(job_id, "done", progress=1.0, transcript_id=transcript_id)
 
+        # A job that finishes says nothing at present, so the only evidence in
+        # the log that one worked is the next job starting. That makes "did it
+        # succeed or is it still going?" unanswerable for the last job in a run
+        # — exactly the question worth asking. The ratio is the useful part: it
+        # is what separates a slow model from a stuck one.
+        audio_seconds = getattr(info, "duration", 0) or 0
+        elapsed = time.monotonic() - started_at
+        speed = f"{audio_seconds / elapsed:.1f}x realtime" if elapsed > 0 else "?"
+        print(
+            f"[WinWhisper] job {job_id[:8]} done: {len(segments)} segment(s) from "
+            f"{audio_seconds:.0f}s of audio in {elapsed:.0f}s ({speed}) "
+            f"using {job.model_name} on {transcriber.device}",
+            flush=True,
+        )
+
         # ── Cleanup temp audio ─────────────────────────────────────────────
         if temp_audio:
             await _cleanup_temp(temp_audio)
@@ -470,20 +487,38 @@ worker = JobWorker()
 
 
 async def recover_stale_jobs() -> None:
-    """Re-queues jobs left in queued/processing state by a previous server run."""
+    """
+    Resolves jobs left mid-flight when the app last closed.
+
+    These used to be re-queued and started immediately, which meant launching
+    the app could begin transcribing something the user had not asked for in
+    this session — work they last saw before a crash, silently resuming minutes
+    of CPU on a model they may not have picked. Worse, a job that wedged came
+    back on every subsequent launch and wedged again.
+
+    A row cannot be left saying "processing" either, because nothing would ever
+    move it. So mark them failed with a reason, which is both true and
+    actionable: the source file is still recorded against the job, so
+    resubmitting is one click, and it is the user's click.
+    """
     async with async_session_factory() as session:
         result = await session.execute(
             select(Job).where(Job.status.in_(["queued", "processing"]))
         )
         stale = result.scalars().all()
         for job in stale:
-            job.status = "queued"
+            job.status = "failed"
             job.progress = 0.0
+            job.error_message = (
+                "Interrupted when WinWhisper last closed. Start it again to retry."
+            )
             job.updated_at = datetime.utcnow()
         await session.commit()
 
-    for job in stale:
-        await worker.enqueue(job.id)
-
     if stale:
-        print(f"[WinWhisper] Re-queued {len(stale)} stale job(s).", flush=True)
+        print(
+            f"[WinWhisper] {len(stale)} job(s) were interrupted by the last "
+            "shutdown and have been marked failed. They are not restarted "
+            "automatically — resubmit any you still want.",
+            flush=True,
+        )
