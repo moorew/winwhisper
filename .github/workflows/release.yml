@@ -262,6 +262,18 @@ jobs:
           }
           Write-Host "VAD model bundled: $($vad.Name) ($([math]::Round($vad.Length/1MB,2)) MB)"
 
+          # certifi's CA bundle is the same shape of problem: a data file that
+          # nothing imports. httpx builds an SSL context when a client is
+          # constructed, so without it remote transcription fails the moment it
+          # reaches for another machine — long after startup, where the smoke
+          # test would not see it.
+          $ca = Get-ChildItem "$src\_internal\certifi" -Filter "cacert.pem" -Recurse -ErrorAction SilentlyContinue
+          if (-not $ca) {
+            throw "No certifi cacert.pem under _internal\certifi — the spec must " +
+                  "collect_data_files('certifi'). Remote transcription would fail at runtime."
+          }
+          Write-Host "CA bundle present: $($ca.FullName)"
+
       - name: Smoke-test bundled engine
         shell: pwsh
         run: |

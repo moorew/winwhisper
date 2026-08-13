@@ -28,6 +28,12 @@ fw_datas           = collect_data_files("faster_whisper")
 onnx_datas         = collect_data_files("onnxruntime")
 onnx_binaries      = collect_dynamic_libs("onnxruntime")
 
+# httpx talks to a WinWhisper engine on another of your machines. It builds an
+# SSL context when a client is constructed, which needs certifi's cacert.pem —
+# a data file, so nothing in the import graph pulls it in. Same shape of gap as
+# the Silero VAD model, which shipped missing and broke every transcription.
+certifi_datas      = collect_data_files("certifi")
+
 a = Analysis(
     ["main.py"],
     pathex=["."],
@@ -43,6 +49,7 @@ a = Analysis(
         *speechbrain_datas,
         *fw_datas,
         *onnx_datas,
+        *certifi_datas,
     ],
     hiddenimports=[
         "uvicorn.logging",
@@ -64,6 +71,9 @@ a = Analysis(
         "soundfile", "numpy",
         "watchdog.observers", "watchdog.observers.polling",
         "yt_dlp",
+        # Imported at module scope by core/remote.py: if these are missed the
+        # engine does not start at all, rather than losing one feature.
+        "httpx", "httpcore", "h11", "certifi",
         "docx",
         "pydantic", "pydantic_core", "pydantic_settings",
         "sse_starlette", "sse_starlette.sse",

@@ -11,4 +11,4 @@ src-tauri/tauri.conf.json when cutting a release.
 """
 from __future__ import annotations
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"

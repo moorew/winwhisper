@@ -77,6 +77,20 @@ def main() -> int:
         return 1
     print(f"[smoke] /health -> {health}", flush=True)
 
+    # Remote transcription lives behind this route, and reaching it proves the
+    # frozen bundle carries httpx and the Tailscale wrapper. A build runner has
+    # no Tailscale, so the honest answer is "unavailable" — the point is that it
+    # answers at all rather than 500-ing on a missing import.
+    status, devices = _request(f"{base}/devices")
+    if status != 200:
+        print(f"[smoke] FAIL: /devices returned {status}")
+        return 1
+    print(
+        f"[smoke] /devices -> tailscale_available={devices.get('tailscale_available')} "
+        f"sharing={devices.get('sharing')} devices={len(devices.get('devices') or [])}",
+        flush=True,
+    )
+
     # ── Download the smallest model ───────────────────────────────────────
     print(f"[smoke] downloading model '{args.model}' ...", flush=True)
     _request(f"{base}/models/{args.model}/download", payload={})
