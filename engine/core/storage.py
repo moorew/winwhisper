@@ -2,9 +2,20 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 APP_NAME = "WinWhisper"
+
+# How long a working file may sit in the cache before it is assumed abandoned.
+#
+# Downloads and uploads are deleted when their job finishes or is cancelled, but
+# not when it fails — deliberately, because the retry button reads that same
+# copy back. Nothing then ever removes the leftovers of a job that failed and
+# was never retried, so the cache grows by the size of every failed download,
+# permanently. A day is long enough that retrying later still works and short
+# enough that the folder does not become a graveyard.
+TEMP_TTL_SECONDS = 24 * 60 * 60
 
 
 def _get_base_dir() -> Path:
@@ -52,6 +63,38 @@ class AppStorage:
     def clear_port(self) -> None:
         if self.port_file.exists():
             self.port_file.unlink(missing_ok=True)
+
+    def purge_stale_temp(self, ttl_seconds: int = TEMP_TTL_SECONDS) -> tuple[int, int]:
+        """
+        Deletes cache files left behind by jobs that failed and were never
+        retried. Returns (files removed, bytes reclaimed).
+
+        Only files directly inside temp_dir, and only ones older than the TTL:
+        a job running right now writes into this same folder, and reclaiming a
+        few megabytes is not worth any chance of pulling a file out from under
+        it.
+        """
+        removed = 0
+        reclaimed = 0
+        cutoff = time.time() - ttl_seconds
+        try:
+            entries = list(self.temp_dir.iterdir())
+        except OSError:
+            return (0, 0)
+
+        for entry in entries:
+            try:
+                if not entry.is_file():
+                    continue
+                stat = entry.stat()
+                if stat.st_mtime >= cutoff:
+                    continue
+                entry.unlink()
+            except OSError:
+                continue  # in use, or gone already — either way, leave it
+            removed += 1
+            reclaimed += stat.st_size
+        return (removed, reclaimed)
 
 
 storage = AppStorage()

@@ -522,3 +522,14 @@ async def recover_stale_jobs() -> None:
             "automatically — resubmit any you still want.",
             flush=True,
         )
+
+    # Nothing is running yet, so anything old in the cache belongs to a job that
+    # is already over. Failed jobs keep their audio so the retry button works;
+    # this is what stops that from being forever.
+    removed, reclaimed = await asyncio.to_thread(storage.purge_stale_temp)
+    if removed:
+        print(
+            f"[WinWhisper] Cleared {removed} abandoned cache file(s), "
+            f"{reclaimed / 1048576:.0f} MB reclaimed.",
+            flush=True,
+        )

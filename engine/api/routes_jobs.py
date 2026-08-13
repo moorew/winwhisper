@@ -113,8 +113,14 @@ async def retry_job(
     job = await session.get(Job, job_id)
     if not job:
         raise HTTPException(404, "Job not found")
-    if job.status in ("queued", "processing"):
-        raise HTTPException(409, "Job is already running")
+    # Only jobs that did not produce a transcript. Re-running a finished one
+    # would clear its transcript_id and leave the old transcript orphaned in the
+    # list beside the new one — the UI never offers it, but the endpoint should
+    # not depend on the UI for that.
+    if job.status not in ("failed", "cancelled"):
+        raise HTTPException(
+            409, f"Only failed or cancelled jobs can be run again (this one is {job.status})"
+        )
     if not (job.source_url or job.source_path):
         raise HTTPException(
             409, "This job has no source left to run again — submit it afresh."

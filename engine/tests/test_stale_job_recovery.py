@@ -120,6 +120,29 @@ async def test_a_running_job_is_not_started_twice(client):
 
 
 @pytest.mark.asyncio
+async def test_a_finished_job_is_not_run_again(client):
+    """
+    Re-running a job that already produced a transcript would clear its
+    transcript_id and leave the old transcript orphaned in the list next to the
+    new one. The UI never offers it; the endpoint should not rely on that.
+    """
+    job_id = await _add_job("done")
+    response = client.post(f"/jobs/{job_id}/retry")
+    assert response.status_code == 409
+    assert "failed or cancelled" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_job_can_be_run_again(client, monkeypatch):
+    job_id = await _add_job("cancelled")
+    enqueued: list[str] = []
+    monkeypatch.setattr(worker, "enqueue", lambda jid: _record(enqueued, jid))
+
+    assert client.post(f"/jobs/{job_id}/retry").status_code == 200
+    assert enqueued == [job_id]
+
+
+@pytest.mark.asyncio
 async def test_retrying_a_job_with_no_source_is_refused(client):
     job_id = str(uuid.uuid4())
     async with async_session_factory() as session:
