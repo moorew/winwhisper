@@ -13,6 +13,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { api, DictationStatus, ModelInfo, WatchFolderStatus } from "@/lib/api";
 import {
   Card,
+  Hint,
   PageHeader,
   SecondaryButton,
   SectionLabel,
@@ -292,6 +293,12 @@ export default function Settings() {
               icon={<Moon size={16} strokeWidth={1.75} />}
               title="Theme"
               description="Follows your Windows setting unless you pick one"
+              hint={
+                <>
+                  System tracks the light/dark mode in Windows Settings and switches
+                  with it. Light and Dark override that and stay put.
+                </>
+              }
             >
               <Segmented
                 size="sm"
@@ -308,7 +315,25 @@ export default function Settings() {
 
           {/* ── Transcription ──────────────────────────────────────── */}
           <Group id="transcription" label="Transcription defaults">
-            <Row title="Default model" description="Used when a job doesn't name one">
+            <Row
+              title="Default model"
+              description="Used when a job doesn't name one"
+              hint={
+                <>
+                  Bigger models are more accurate and slower, and every one of them
+                  runs entirely on this PC.
+                  <br />
+                  <br />
+                  <strong>tiny / base</strong> are fast enough for clear speech and
+                  quick notes. <strong>small / medium</strong> handle accents and
+                  crosstalk better. <strong>large-v3</strong> is the most accurate and
+                  wants a GPU — on CPU it can run slower than real time.
+                  <br />
+                  <br />
+                  You can still pick a different model per job on the dashboard.
+                </>
+              }
+            >
               {downloaded.length ? (
                 <div className="flex items-center gap-2">
                   {savedKey === "model" && (
@@ -331,16 +356,53 @@ export default function Settings() {
               title="Speaker diarization"
               description={
                 <>
-                  Needs a free HuggingFace token ·{" "}
+                  Label who is speaking · needs a free token ·{" "}
                   <a href="https://huggingface.co/pyannote/speaker-diarization-3.1" target="_blank" rel="noreferrer">
                     setup guide
                   </a>
                 </>
               }
+              hint={
+                <>
+                  Splits the transcript by voice, so each line is tagged Speaker 1,
+                  Speaker 2 and so on — useful for interviews and meetings, pointless
+                  for a single narrator.
+                  <br />
+                  <br />
+                  It runs after transcription and adds roughly a third again to the
+                  time. It needs the Hugging Face token below; without one the
+                  transcript is still produced, just without speaker labels.
+                </>
+              }
             >
               <Toggle checked={diarize} onChange={handleDiarize} label="" />
             </Row>
-            <Row title="HuggingFace token" description="Stored locally, never sent anywhere else">
+            <Row
+              title="Hugging Face token"
+              description="Only for speaker diarization · stored on this PC"
+              hint={
+                <>
+                  Speaker diarization uses <strong>pyannote</strong>, a model whose
+                  authors require you to accept their licence before downloading it.
+                  The token is how that acceptance is checked — it is the only thing
+                  it is used for.
+                  <br />
+                  <br />
+                  Transcription itself needs nothing here. Leave this blank unless you
+                  want speaker labels.
+                  <br />
+                  <br />
+                  To get one: create a free account at huggingface.co, accept the
+                  conditions on the <em>speaker-diarization-3.1</em> and{" "}
+                  <em>segmentation-3.0</em> model pages, then make a read token under
+                  Settings → Access Tokens.
+                  <br />
+                  <br />
+                  It is saved in WinWhisper's local database and sent only to
+                  huggingface.co, to download the model the first time.
+                </>
+              }
+            >
               <div className="flex items-center gap-2">
                 <input
                   type="password"
@@ -360,7 +422,23 @@ export default function Settings() {
                 </SecondaryButton>
               </div>
             </Row>
-            <Row title="Auto-export on finish" description="Write these alongside every finished transcript">
+            <Row
+              title="Auto-export on finish"
+              description="Write these alongside every finished transcript"
+              hint={
+                <>
+                  Every transcript is saved in the app regardless. This additionally
+                  writes files next to the source audio the moment a job finishes, so
+                  you never have to come back and export by hand.
+                  <br />
+                  <br />
+                  <strong>TXT</strong> plain text · <strong>SRT</strong> and{" "}
+                  <strong>VTT</strong> timed subtitles for video editors and players ·{" "}
+                  <strong>JSON</strong> everything, including per-word timings,
+                  confidence and speakers.
+                </>
+              }
+            >
               <div className="flex flex-wrap gap-1.5">
                 {EXPORT_FORMATS.map((f) => {
                   const on = autoExport.includes(f);
@@ -390,6 +468,17 @@ export default function Settings() {
               icon={<Folder size={16} strokeWidth={1.75} />}
               title="Watch folder"
               description="Files dropped here are transcribed automatically"
+              hint={
+                <>
+                  While this is on, any audio or video file that appears in the folder
+                  is queued with your default model — no need to open WinWhisper and
+                  add it.
+                  <br />
+                  <br />
+                  Existing files are left alone; only ones added after you switch it on
+                  are picked up. The originals are never moved or deleted.
+                </>
+              }
             >
               <div className="flex items-center gap-2">
                 <div className="flex h-[34px] w-[268px] items-center gap-2 rounded-control border border-stroke-strong bg-input px-3">
@@ -417,6 +506,17 @@ export default function Settings() {
               icon={<Keyboard size={16} strokeWidth={1.75} />}
               title="Global dictation"
               description="Hold the hotkey, speak, release — text lands in the focused window"
+              hint={
+                <>
+                  Works anywhere in Windows, not just in WinWhisper. Hold the hotkey,
+                  say your piece, let go, and the text is typed into whatever had focus
+                  — an email, a chat box, a code editor.
+                  <br />
+                  <br />
+                  Click the keys to record a different shortcut. Nothing is captured
+                  unless the hotkey is held down.
+                </>
+              }
             >
               <div className="flex items-center gap-2">
                 <button
@@ -456,9 +556,24 @@ export default function Settings() {
           {/* ── Storage ────────────────────────────────────────────── */}
           <Group id="storage" label="Storage">
             <div className="px-4 py-[14px]">
-              <p className="text-title font-medium text-text-strong">
-                {formatFileSize(storage?.total_bytes ?? modelsBytes)} used
-              </p>
+              <div className="flex items-center gap-1.5">
+                <p className="text-title font-medium text-text-strong">
+                  {formatFileSize(storage?.total_bytes ?? modelsBytes)} used
+                </p>
+                <Hint label="storage">
+                  <strong>Models</strong> are the downloaded speech models — delete any
+                  you do not use from the Models page.
+                  <br />
+                  <br />
+                  <strong>Transcripts</strong> is the database of everything you have
+                  transcribed.
+                  <br />
+                  <br />
+                  <strong>Cache</strong> is working files: audio pulled from YouTube,
+                  uploads awaiting transcription. It is cleared as jobs finish and is
+                  safe to lose.
+                </Hint>
+              </div>
               {/* Proportional stack: models, then transcripts, then cache. */}
               <div className="mt-2.5 flex h-1.5 overflow-hidden rounded-[3px] bg-track">
                 {storage && storage.total_bytes > 0 && (
@@ -533,11 +648,14 @@ function Row({
   icon,
   title,
   description,
+  hint,
   children,
 }: {
   icon?: ReactNode;
   title: string;
   description?: ReactNode;
+  /** The longer explanation, behind the ? beside the title. */
+  hint?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -548,7 +666,10 @@ function Row({
         </div>
       )}
       <div className="min-w-0 flex-1">
-        <p className="text-title font-medium text-text-strong">{title}</p>
+        <div className="flex items-center gap-1.5">
+          <p className="truncate text-title font-medium text-text-strong">{title}</p>
+          {hint && <Hint label={title}>{hint}</Hint>}
+        </div>
         {description && <p className="mt-0.5 text-meta text-text-dim">{description}</p>}
       </div>
       <div className="flex-shrink-0">{children}</div>

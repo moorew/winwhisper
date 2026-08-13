@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import select
 
+from core import watchdog
 from core.database import Job, Segment, Speaker, Transcript, async_session_factory
 from core.diarizer import SPEAKER_COLORS, diarizer, merge_speakers
 from core.settings import get_setting
@@ -231,8 +232,10 @@ async def _download_youtube(
     def _yt_detail(detail: str) -> None:
         # Not logged on every callback — the extractor already logs a summary
         # every few seconds.
+        watchdog.beat()
         _set_stage(job_id, f"Downloading from YouTube — {detail}", log=False)
 
+    watchdog.begin("downloading from YouTube")
     try:
         file_path, metadata = await asyncio.wait_for(
             asyncio.to_thread(
@@ -252,6 +255,8 @@ async def _download_youtube(
             f"YouTube download exceeded {YOUTUBE_TIMEOUT_SECONDS // 60} minutes "
             "and was abandoned. The video may be very long or rate-limited."
         ) from None
+    finally:
+        watchdog.end()
 
     return file_path, metadata.get("title", url)
 
@@ -280,6 +285,10 @@ class JobWorker:
         await self._queue.put(job_id)
 
     def start(self) -> None:
+        # Nothing else can tell us where a wedged job is stuck: the work happens
+        # in native code on a worker thread, and by the time a user reports it
+        # the only artefact is a percentage that never moved.
+        watchdog.start()
         self._task = asyncio.create_task(self._loop(), name="job-worker")
 
     async def stop(self) -> None:
@@ -367,7 +376,11 @@ class JobWorker:
         # Loading large-v3 off disk the first time is minutes, not seconds, and
         # produces no progress of its own — say so rather than looking frozen.
         _set_stage(job_id, f"Loading model ({job.model_name})")
-        await asyncio.to_thread(transcriber.ensure_loaded, job.model_name)
+        watchdog.begin(f"loading model {job.model_name}")
+        try:
+            await asyncio.to_thread(transcriber.ensure_loaded, job.model_name)
+        finally:
+            watchdog.end()
 
         opts = job.options or {}
 
@@ -383,6 +396,12 @@ class JobWorker:
             # Transcription fills from prog_base up to 0.95 of total
             _live_progress[job_id] = prog_base + p * prog_scale * 0.95
 
+        def _on_stage(text: str) -> None:
+            # Decoding and speech detection run before the first segment exists,
+            # so the bar cannot move — but the label can, which is the
+            # difference between "working" and "frozen" to whoever is watching.
+            _set_stage(job_id, f"{text} · {job.model_name}")
+
         # ── Transcription ──────────────────────────────────────────────────
         _set_stage(job_id, f"Transcribing with {job.model_name}")
         try:
@@ -396,6 +415,7 @@ class JobWorker:
                 word_timestamps=opts.get("word_timestamps", True),
                 should_continue=lambda: not is_cancel_requested(job_id),
                 on_partial=_on_partial,
+                on_stage=_on_stage,
             )
         except TranscriptionCancelled:
             # Don't leave the user's temp upload behind just because they

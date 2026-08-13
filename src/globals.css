@@ -166,6 +166,16 @@
     height: 100%;
   }
 
+  /* The surface WebView2 paints before — and outside — anything we draw.
+   * It defaults to white, which is what showed through at the window corners:
+   * Windows 11 rounds the window itself, and every pixel between the OS radius
+   * and ours was this backdrop rather than the desktop. Painting it in the
+   * chrome colour means a mismatch of a pixel or two is invisible instead of a
+   * white notch, and it also removes the white flash on the first paint. */
+  html {
+    background-color: hsl(var(--chrome-mid));
+  }
+
   body {
     @apply bg-transparent text-foreground;
     font-family: "Segoe UI Variable Text", "Segoe UI Variable Display", "Segoe UI",

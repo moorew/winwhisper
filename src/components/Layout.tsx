@@ -57,12 +57,13 @@ export default function Layout({
   return (
     // The window's own surface. Mica shows through where the platform supports
     // it; app-chrome is the gradient fallback.
-    <div
-      className={cn(
-        "app-chrome flex h-full flex-col overflow-hidden",
-        maximized ? "rounded-none" : "rounded-window"
-      )}
-    >
+    //
+    // Deliberately square: Windows 11 rounds the window itself, and no CSS
+    // radius we pick can track the OS one across versions and DPI. Rounding
+    // here as well left a crescent in each corner that belonged to neither
+    // shape — the white notches. Painting edge to edge lets the compositor do
+    // the clipping, so the corner is whatever Windows says it is.
+    <div className="app-chrome flex h-full flex-col overflow-hidden">
       <TitleBar maximized={maximized} readerTitle={readerTitle} />
 
       {/* The rail overlays the pane while expanded, so page content never

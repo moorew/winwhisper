@@ -110,7 +110,17 @@ class YouTubeExtractor:
                 return
 
             downloaded = d.get("downloaded_bytes") or 0
-            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            info_dict = d.get("info_dict") or {}
+            total = (
+                d.get("total_bytes")
+                or d.get("total_bytes_estimate")
+                # Last resort: the size the extractor advertised. Without it a
+                # download yt-dlp cannot size leaves the bar pinned at zero for
+                # its whole duration, which reads as a stalled job.
+                or info_dict.get("filesize")
+                or info_dict.get("filesize_approx")
+                or 0
+            )
             speed = d.get("speed") or 0
             now = time.monotonic()
 
@@ -186,12 +196,31 @@ class YouTubeExtractor:
             # transfers.
             # ios is omitted deliberately: it needs a PO token we cannot supply and only
             # produces a warning before being skipped.
-            "extractor_args": {"youtube": {"player_client": ["android_vr", "web"]}},
+            #
+            # "default" trails the two we prefer as a safety net: YouTube hands
+            # out 403s per client and the set that works changes without notice,
+            # so a hard-coded pair of clients is a single point of failure. This
+            # costs an extra extraction attempt only when the preferred ones
+            # have already failed.
+            "extractor_args": {
+                "youtube": {"player_client": ["android_vr", "web", "default"]}
+            },
         }
 
         print(f"[WinWhisper] YouTube: downloading audio for {url}", flush=True)
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
+
+        # Which format actually came back matters when diagnosing a slow or
+        # unreadable download after the fact, and it is invisible otherwise.
+        size = info.get("filesize") or info.get("filesize_approx") or 0
+        print(
+            f"[WinWhisper] YouTube: format {info.get('format_id')} "
+            f"({info.get('ext')}/{info.get('acodec')}, "
+            f"{info.get('abr') or '?'} kbps, "
+            f"{size / 1048576:.1f} MB) for a {info.get('duration')}s video",
+            flush=True,
+        )
 
         video_id = info.get("id", "unknown")
 

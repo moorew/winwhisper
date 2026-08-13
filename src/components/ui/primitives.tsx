@@ -1,9 +1,52 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, HelpCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 /* Shared building blocks for the overhauled pages, so the token values in the
  * design are declared once rather than re-typed on every screen. */
+
+/**
+ * The "what does this actually do" affordance next to a setting's name.
+ *
+ * Opens on hover and on focus, and a click pins it open — a tooltip that only
+ * answers to a hovering mouse is no answer at all for anyone driving the app
+ * from the keyboard.
+ */
+export function Hint({ children, label }: { children: ReactNode; label: string }) {
+  const [open, setOpen] = useState(false);
+  const [pinned, setPinned] = useState(false);
+
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip open={open || pinned} onOpenChange={setOpen}>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={`About ${label}`}
+            onClick={() => setPinned((p) => !p)}
+            onBlur={() => setPinned(false)}
+            className={cn(
+              "flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full",
+              "text-text-dim transition-colors duration-[120ms] hover:text-text-tertiary",
+              (open || pinned) && "text-text-tertiary"
+            )}
+          >
+            <HelpCircle size={13} strokeWidth={1.75} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" align="start">
+          {children}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
 
 export function PageHeader({
   title,
